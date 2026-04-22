@@ -1,10 +1,10 @@
 {
   "generator_family": "gemma_large",
   "method": "rrd_pairwise_reference",
-  "output_path": "/data/minseo/KCC2026/korean-rubric-grounding-main/data/processed/rubrics_rrd_pairwise_reference__gemma_large.jsonl",
+  "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rrd_pairwise_reference__gemma_large.jsonl",
   "key_field": "pair_id",
-  "completed_rows": 1396,
-  "expected_rows": 1396,
+  "completed_rows": 245,
+  "expected_rows": 245,
   "remaining_rows": 0,
   "complete": true
 }

@@ -1,0 +1,52 @@
+{
+  "model": "gpt-oss-120b",
+  "reasoning_effort": "low",
+  "max_output_tokens": 8192,
+  "concurrency": 100,
+  "pair_count": 245,
+  "binary_eval_jobs": 15164,
+  "binary_eval_cache_path": "/data/minseo/KCC2026/results/raw/oneoff/rrd_subset100_gptoss120b_low_20260422_124152/llm_binary_eval_cache.jsonl",
+  "predictions_path": "/data/minseo/KCC2026/results/raw/oneoff/rrd_subset100_gptoss120b_low_20260422_124152/llm_pair_predictions.jsonl",
+  "metrics": {
+    "rrd_pairwise_sample__qwen_large": {
+      "rows": 245,
+      "correct": 133,
+      "parse_failures": 1,
+      "pred_A": 187,
+      "pred_B": 58,
+      "gold_A": 103,
+      "gold_B": 142,
+      "accuracy": 0.5428571428571428
+    },
+    "rrd_pairwise_reference__qwen_large": {
+      "rows": 245,
+      "correct": 145,
+      "parse_failures": 1,
+      "pred_A": 187,
+      "pred_B": 58,
+      "gold_A": 103,
+      "gold_B": 142,
+      "accuracy": 0.5918367346938775
+    },
+    "rrd_pairwise_sample__gemma_large": {
+      "rows": 245,
+      "correct": 128,
+      "parse_failures": 1,
+      "pred_A": 184,
+      "pred_B": 61,
+      "gold_A": 103,
+      "gold_B": 142,
+      "accuracy": 0.5224489795918368
+    },
+    "rrd_pairwise_reference__gemma_large": {
+      "rows": 245,
+      "correct": 146,
+      "parse_failures": 1,
+      "pred_A": 176,
+      "pred_B": 69,
+      "gold_A": 103,
+      "gold_B": 142,
+      "accuracy": 0.5959183673469388
+    }
+  }
+}

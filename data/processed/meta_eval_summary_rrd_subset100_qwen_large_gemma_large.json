@@ -1,0 +1,11 @@
+{
+  "total_raw_pairs": 1566,
+  "dropped_tie_pair_count": 170,
+  "written_non_tie_pair_count": 1396,
+  "dropped_tie_prompt_count": 160,
+  "subset_name": "rrd_subset100_qwen_large_gemma_large",
+  "subset_prompt_count": 100,
+  "subset_pair_count": 245,
+  "source_prompt_ids_path": "/data/minseo/KCC2026/data/processed/rrd_sample_prompt_subset_100.ids.txt",
+  "source_pairs_path": "/data/minseo/KCC2026/data/processed/meta_eval_pairs_rrd_subset100_qwen_large_gemma_large.jsonl"
+}

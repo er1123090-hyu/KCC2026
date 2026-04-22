@@ -3,8 +3,8 @@
   "method": "rrd_pairwise_reference",
   "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rrd_pairwise_reference__qwen_large.jsonl",
   "key_field": "pair_id",
-  "completed_rows": 0,
-  "expected_rows": 1396,
-  "remaining_rows": 1396,
-  "complete": false
+  "completed_rows": 245,
+  "expected_rows": 245,
+  "remaining_rows": 0,
+  "complete": true
 }
