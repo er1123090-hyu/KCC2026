@@ -57,9 +57,10 @@ rubric_generation:
     max_output_tokens: 1800
     temperature: 0.2
   rrd_pairwise:
-    initial_criteria: 8
+    initial_criteria: 4
+    sample_response_count: 4
     max_final_criteria: 12
-    max_depth: 2
+    max_depth: 1
     decompose_if_satisfied_by_more_than: 3
     redundancy_cosine_threshold: 0.86
     max_output_tokens: 1400

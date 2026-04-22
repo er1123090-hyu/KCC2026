@@ -3,8 +3,8 @@
   "method": "rrd_pairwise_sample",
   "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rrd_pairwise_sample__qwen_large.jsonl",
   "key_field": "prompt_id",
-  "completed_rows": 10,
-  "expected_rows": 100,
-  "remaining_rows": 90,
+  "completed_rows": 90,
+  "expected_rows": 573,
+  "remaining_rows": 483,
   "complete": false
 }

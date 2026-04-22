@@ -5,7 +5,7 @@
 - 평가 대상 분포를 대표하는 sampled responses
 
 목표:
-- 현재 요청을 평가하는 데 필요한 핵심 rubric을 8개 제안하세요.
+- 현재 요청을 평가하는 데 필요한 핵심 rubric을 정확히 {initial_criteria_count}개 제안하세요.
 - 각 rubric은 prompt-specific이어야 하고, binary YES/NO로 판정 가능해야 합니다.
 - vague하거나 generic한 writing advice는 피하세요.
 - 응답 내용 자체를 그대로 복사하지 마세요.

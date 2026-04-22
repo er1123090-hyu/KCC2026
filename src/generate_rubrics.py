@@ -166,6 +166,7 @@ def _call_model_json(
     max_new_tokens: int,
     temperature: float | None,
     retries: int,
+    response_format_json: bool = False,
 ) -> tuple[dict[str, Any], str]:
     if _rubric_generation_backend() == "openai_compatible":
         extra_body = None
@@ -182,7 +183,7 @@ def _call_model_json(
                 prompt=prompt,
                 temperature=temperature,
                 max_output_tokens=max_new_tokens,
-                response_format_json=False,
+                response_format_json=response_format_json,
                 extra_body=extra_body,
             )
             last_raw = raw_text
@@ -271,8 +272,11 @@ def _criteria_from_payload(
         item.setdefault("polarity", "positive")
         item.setdefault("self_contained", True)
         criteria.append(Criterion.model_validate(item))
-    if exact_count is not None and len(criteria) != exact_count:
-        raise ValueError(f"Expected {exact_count} criteria, found {len(criteria)}")
+    if exact_count is not None:
+        if len(criteria) > exact_count:
+            criteria = criteria[:exact_count]
+        elif len(criteria) == 0:
+            raise ValueError(f"Expected {exact_count} criteria, found 0")
     return criteria
 
 
@@ -325,6 +329,18 @@ def _mock_rar_items(*, prompt_id: str, method: str, count: int = 7) -> list[RaRR
 
 def _sample_responses_json(samples: Sequence[AuxiliarySample]) -> str:
     return json.dumps([sample.response for sample in samples], ensure_ascii=False, indent=2)
+
+
+def _select_rrd_samples(samples: Sequence[AuxiliarySample], *, config: dict[str, Any]) -> list[AuxiliarySample]:
+    configured = config["rubric_generation"]["rrd_pairwise"].get("sample_response_count")
+    if configured is None:
+        return list(samples)
+    sample_count = int(configured)
+    if sample_count < 1:
+        raise RuntimeError("rubric_generation.rrd_pairwise.sample_response_count must be >= 1")
+    if len(samples) < sample_count:
+        raise RuntimeError(f"Expected at least {sample_count} auxiliary samples, found {len(samples)}")
+    return list(samples[:sample_count])
 
 
 def _reference_response(pair: MetaEvalPair) -> str:
@@ -470,6 +486,7 @@ def _judge_generation_satisfaction(
         max_new_tokens=128,
         temperature=0.0,
         retries=2,
+        response_format_json=True,
     )
     return bool(payload.get("satisfied", False))
 
@@ -501,6 +518,7 @@ def _run_rrd_filter_prompt(
         max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
         temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
         retries=2,
+        response_format_json=True,
     )
     return bool(payload.get("keep", False)), {
         "reason": payload.get("reason", ""),
@@ -540,6 +558,7 @@ def _decompose_rrd_criterion(
         max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
         temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
         retries=2,
+        response_format_json=True,
     )
     subcriteria = _criteria_from_payload(payload, key="subcriteria", prefix="D")
     if not 2 <= len(subcriteria) <= 4:
@@ -646,6 +665,10 @@ def _fallback_rrd_criteria(*, prompt_id: str, method: str, max_count: int) -> li
     return criteria
 
 
+def _method_requires_auxiliary_samples(method: str) -> bool:
+    return method in {"rar_pairwise_sample", "rrd_pairwise_sample"}
+
+
 def _generate_rrd_rubric(
     *,
     prompt_id: str,
@@ -663,11 +686,13 @@ def _generate_rrd_rubric(
     weight_template: str,
     method: str,
 ) -> Rubric:
+    reference_only_generation = method == "rrd_pairwise_reference"
     metadata: dict[str, Any] = {
         "fallback_used": None,
         "errors": [],
         "auxiliary_sample_ids": [sample.sample_id for sample in samples],
         "reference_guidance_used": bool(reference_response),
+        "reference_only_generation": reference_only_generation,
     }
     try:
         if smoke_test:
@@ -684,6 +709,7 @@ def _generate_rrd_rubric(
                 prompt=prompt,
                 reference_response=reference_response or "(none)",
                 sample_responses_json=_sample_responses_json(samples),
+                initial_criteria_count=config["rubric_generation"]["rrd_pairwise"]["initial_criteria"],
             )
             payload, raw_output = _call_model_json(
                 config=config,
@@ -692,6 +718,7 @@ def _generate_rrd_rubric(
                 max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
                 temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
                 retries=2,
+                response_format_json=True,
             )
             initial_criteria = _criteria_from_payload(
                 payload,
@@ -702,23 +729,32 @@ def _generate_rrd_rubric(
             metadata["raw_output"] = raw_output
 
         diagnostics: list[dict[str, Any]] = []
-        expanded_criteria: list[Criterion] = []
-        for criterion in initial_criteria:
-            expanded_criteria.extend(
-                _expand_rrd_criterion(
-                    criterion=criterion,
-                    prompt=prompt,
-                    samples=samples,
-                    reference_response=reference_response,
-                    generator_model=generator_model,
-                    config=config,
-                    depth=0,
-                    smoke_test=smoke_test,
-                    filter_template=filter_template,
-                    decompose_template=decompose_template,
-                    diagnostics=diagnostics,
-                )
+        if reference_only_generation:
+            expanded_criteria = list(initial_criteria)
+            diagnostics.append(
+                {
+                    "event": "reference_only_generation",
+                    "detail": "Skipped auxiliary-sample filter/decompose and used reference-only initial criteria.",
+                }
             )
+        else:
+            expanded_criteria = []
+            for criterion in initial_criteria:
+                expanded_criteria.extend(
+                    _expand_rrd_criterion(
+                        criterion=criterion,
+                        prompt=prompt,
+                        samples=samples,
+                        reference_response=reference_response,
+                        generator_model=generator_model,
+                        config=config,
+                        depth=0,
+                        smoke_test=smoke_test,
+                        filter_template=filter_template,
+                        decompose_template=decompose_template,
+                        diagnostics=diagnostics,
+                    )
+                )
         expanded_criteria = _prune_redundant_criteria(expanded_criteria, config=config)
         if not expanded_criteria:
             raise RuntimeError("RRD left zero criteria after filtering/pruning.")
@@ -896,19 +932,26 @@ def main() -> None:
         ],
     )
     parser.add_argument("--generator_family")
+    parser.add_argument("--prompt_limit", type=int)
+    parser.add_argument("--prompt_id_file")
     args = parser.parse_args()
 
     config = load_config(args.config, smoke_test=args.smoke_test)
     all_pairs = load_meta_eval_pairs(get_meta_eval_pairs_path())
     prompt_rows = grouped_prompt_rows(all_pairs)
-    auxiliary_samples = load_auxiliary_samples(get_auxiliary_samples_path())
+    prompt_id_allowlist: set[str] | None = None
+    if args.prompt_id_file:
+        prompt_id_path = Path(args.prompt_id_file)
+        if not prompt_id_path.exists():
+            raise RuntimeError(f"prompt_id_file not found: {prompt_id_path}")
+        prompt_id_allowlist = {
+            line.strip()
+            for line in prompt_id_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+        if not prompt_id_allowlist:
+            raise RuntimeError(f"prompt_id_file is empty: {prompt_id_path}")
     samples_by_prompt: dict[str, list[AuxiliarySample]] = defaultdict(list)
-    for sample in auxiliary_samples:
-        samples_by_prompt[sample.prompt_id].append(sample)
-    for prompt_id, samples in samples_by_prompt.items():
-        expected = config["auxiliary_response_generation"]["num_samples"]
-        if len(samples) != expected:
-            raise RuntimeError(f"Prompt {prompt_id} expected {expected} auxiliary samples, found {len(samples)}")
 
     templates = {
         "rar_reference": load_prompt_template("configs/prompts/rar_generate_reference_ko.txt"),
@@ -932,6 +975,14 @@ def main() -> None:
             "rrd_pairwise_sample",
         ]
     )
+    if any(_method_requires_auxiliary_samples(method) for method in method_list):
+        auxiliary_samples = load_auxiliary_samples(get_auxiliary_samples_path())
+        for sample in auxiliary_samples:
+            samples_by_prompt[sample.prompt_id].append(sample)
+        for prompt_id, samples in samples_by_prompt.items():
+            expected = config["auxiliary_response_generation"]["num_samples"]
+            if len(samples) != expected:
+                raise RuntimeError(f"Prompt {prompt_id} expected {expected} auxiliary samples, found {len(samples)}")
     generator_items = list(config["models"]["rubric_generators"].items())
     if args.generator_family:
         generator_items = [(family, model) for family, model in generator_items if family == args.generator_family]
@@ -967,9 +1018,6 @@ def main() -> None:
                 pending_pairs = [pair for pair in sorted(all_pairs, key=lambda item: (item.prompt_id, item.pair_id)) if pair.pair_id not in existing_rows]
 
                 def build_pair_row(pair: MetaEvalPair) -> tuple[str, dict[str, Any]]:
-                    samples = sorted(samples_by_prompt.get(pair.prompt_id, []), key=lambda item: item.sample_id)
-                    if len(samples) != config["auxiliary_response_generation"]["num_samples"]:
-                        raise RuntimeError(f"Prompt {pair.prompt_id} missing auxiliary samples for {method}")
                     if method == "rar_pairwise_reference":
                         rubric = _generate_rar_reference_rubric(
                             pair=pair,
@@ -984,7 +1032,7 @@ def main() -> None:
                             prompt_id=pair.prompt_id,
                             pair_id=pair.pair_id,
                             prompt=pair.prompt,
-                            samples=samples,
+                            samples=[],
                             reference_response=_reference_response(pair),
                             generator_family=generator_family,
                             generator_model=generator_model,
@@ -1043,7 +1091,14 @@ def main() -> None:
                     if configured_concurrency != 1:
                         executor.shutdown(wait=True, cancel_futures=False)
             else:
-                expected_rows = len(prompt_rows)
+                prompt_items = sorted(prompt_rows.items())
+                if prompt_id_allowlist is not None:
+                    prompt_items = [(prompt_id, payload) for prompt_id, payload in prompt_items if prompt_id in prompt_id_allowlist]
+                if args.prompt_limit is not None:
+                    if args.prompt_limit < 1:
+                        raise RuntimeError("--prompt_limit must be >= 1")
+                    prompt_items = prompt_items[: args.prompt_limit]
+                expected_rows = len(prompt_items)
                 completed = len(existing_rows)
                 _write_progress(
                     output_path=output_path,
@@ -1055,12 +1110,13 @@ def main() -> None:
                 )
                 if completed:
                     print(f"[{generator_family}/{method}] resuming with {completed}/{expected_rows} completed")
-                pending_prompts = [(prompt_id, payload) for prompt_id, payload in sorted(prompt_rows.items()) if prompt_id not in existing_rows]
+                pending_prompts = [(prompt_id, payload) for prompt_id, payload in prompt_items if prompt_id not in existing_rows]
 
                 def build_prompt_row(prompt_id: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                     samples = sorted(samples_by_prompt.get(prompt_id, []), key=lambda item: item.sample_id)
                     if len(samples) != config["auxiliary_response_generation"]["num_samples"]:
                         raise RuntimeError(f"Prompt {prompt_id} missing auxiliary samples for {method}")
+                    rrd_samples = _select_rrd_samples(samples, config=config) if method == "rrd_pairwise_sample" else samples
                     if method == "rar_pairwise_sample":
                         rubric = _generate_rar_sample_rubric(
                             prompt_id=prompt_id,
@@ -1077,7 +1133,7 @@ def main() -> None:
                             prompt_id=prompt_id,
                             pair_id=None,
                             prompt=payload["prompt"],
-                            samples=samples,
+                            samples=rrd_samples,
                             reference_response=None,
                             generator_family=generator_family,
                             generator_model=generator_model,
