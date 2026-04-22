@@ -16,6 +16,7 @@ from .utils import (
     get_meta_eval_pairs_path,
     get_meta_eval_summary_path,
     get_pair_predictions_path,
+    get_rrd_weighting_mode,
     get_rubric_output_path,
     get_run_manifest_path,
     load_auxiliary_samples,
@@ -46,6 +47,7 @@ def _git_hash() -> str | None:
 def main() -> None:
     args = parse_common_args()
     config = load_config(args.config, smoke_test=args.smoke_test)
+    weighting_mode = get_rrd_weighting_mode(config, args.rrd_weighting_mode)
     meta_pairs = load_meta_eval_pairs(get_meta_eval_pairs_path())
     meta_summary = read_json(get_meta_eval_summary_path()) if get_meta_eval_summary_path().exists() else {}
     all_samples = load_auxiliary_samples(get_auxiliary_samples_path())
@@ -57,7 +59,10 @@ def main() -> None:
         assert spec.generator_family is not None
         rubrics.extend(Rubric.model_validate(row) for row in read_jsonl(get_rubric_output_path(spec.method, spec.generator_family)))
 
-    predictions = [PairPrediction.model_validate(row) for row in read_jsonl(get_pair_predictions_path())]
+    predictions = [
+        PairPrediction.model_validate(row)
+        for row in read_jsonl(get_pair_predictions_path(weighting_mode=weighting_mode))
+    ]
     prediction_counts: dict[str, int] = defaultdict(int)
     for prediction in predictions:
         prediction_counts[compose_condition_name(prediction.method, prediction.generator_family)] += 1
@@ -79,6 +84,7 @@ def main() -> None:
             "auxiliary_sample_generator": config["auxiliary_response_generation"]["model"],
             "rubric_generators": config["models"]["rubric_generators"],
         },
+        "weighting_mode": weighting_mode,
         "counts": {
             "total_meta_eval_pairs": len(meta_pairs),
             "total_raw_pairs_before_tie_filter": meta_summary.get("total_raw_pairs"),
@@ -91,8 +97,8 @@ def main() -> None:
         },
         "fallback_counts": collect_fallback_counts(rubrics),
     }
-    write_json(get_run_manifest_path(), manifest)
-    print(f"Wrote run manifest to {get_run_manifest_path()}")
+    write_json(get_run_manifest_path(weighting_mode=weighting_mode), manifest)
+    print(f"Wrote run manifest to {get_run_manifest_path(weighting_mode=weighting_mode)}")
 
 
 if __name__ == "__main__":

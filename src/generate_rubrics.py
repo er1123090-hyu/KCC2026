@@ -148,8 +148,14 @@ def _call_hf_json(
     raise RuntimeError(f"Failed to parse JSON from {model_id}: {last_exception}; raw={last_raw[:400]!r}")
 
 
-def _should_use_openai_compatible_backend() -> bool:
-    return bool(os.environ.get("OPENAI_BASE_URL") or os.environ.get("VLLM_BASE_URL"))
+def _rubric_generation_backend() -> str:
+    backend = os.environ.get("KCC_RUBRIC_GENERATION_BACKEND", "hf").strip().lower()
+    if backend not in {"hf", "openai_compatible"}:
+        raise RuntimeError(
+            "KCC_RUBRIC_GENERATION_BACKEND must be one of: 'hf', 'openai_compatible'. "
+            f"Received: {backend!r}"
+        )
+    return backend
 
 
 def _call_model_json(
@@ -161,7 +167,12 @@ def _call_model_json(
     temperature: float | None,
     retries: int,
 ) -> tuple[dict[str, Any], str]:
-    if _should_use_openai_compatible_backend():
+    if _rubric_generation_backend() == "openai_compatible":
+        extra_body = None
+        if "qwen3" in model_id.lower():
+            # Qwen3 often emits long <think> traces before the JSON payload.
+            # Disable thinking explicitly so rubric generation stays parseable.
+            extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
         last_exception: Exception | None = None
         last_raw = ""
         for _ in range(retries + 1):
@@ -172,6 +183,7 @@ def _call_model_json(
                 temperature=temperature,
                 max_output_tokens=max_new_tokens,
                 response_format_json=False,
+                extra_body=extra_body,
             )
             last_raw = raw_text
             try:
@@ -202,6 +214,9 @@ def _call_openai_json(
     max_output_tokens: int,
     retries: int,
 ) -> tuple[dict[str, Any], str]:
+    extra_body = None
+    if "qwen3" in model.lower():
+        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
     last_exception: Exception | None = None
     last_raw = ""
     for _ in range(retries + 1):
@@ -212,6 +227,7 @@ def _call_openai_json(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             response_format_json=True,
+            extra_body=extra_body,
         )
         last_raw = raw_text
         try:
@@ -234,6 +250,20 @@ def _criteria_from_payload(
     criteria: list[Criterion] = []
     for index, raw_item in enumerate(raw_items, start=1):
         item = dict(raw_item)
+        importance = str(item.get("importance", "")).strip().lower()
+        if importance in {"high", "critical"}:
+            item["importance"] = "essential"
+        elif importance in {"medium", "moderate"}:
+            item["importance"] = "important"
+        elif importance in {"low", "minor"}:
+            item["importance"] = "optional"
+        polarity = str(item.get("polarity", "")).strip().lower()
+        if polarity in {"plus", "beneficial"}:
+            item["polarity"] = "positive"
+        elif polarity in {"minus", "harmful"}:
+            item["polarity"] = "negative"
+        if isinstance(item.get("self_contained"), str):
+            item["self_contained"] = str(item["self_contained"]).strip().lower() in {"true", "yes", "1"}
         item.setdefault("id", f"{prefix}{index}")
         item.setdefault("axis", "instruction_following")
         item.setdefault("importance", "important")
@@ -410,7 +440,7 @@ def _judge_generation_satisfaction(
     judge_prompt = """
 당신은 평가 기준 충족 여부를 판단하는 판정자입니다.
 반드시 JSON만 출력하세요.
-{"satisfied": true}
+{{"satisfied": true}}
 
 <user_prompt>
 {prompt}

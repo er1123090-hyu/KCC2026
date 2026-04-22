@@ -6,13 +6,21 @@ import json
 import re
 from dataclasses import dataclass
 
-from .schemas import Criterion, PairPrediction, Rubric
+import numpy as np
+
+from .rrd_weighting import RrdWeightResult, apply_weight_result, compute_llm_weights, compute_uniform_weights, compute_wu_weights
+from .schemas import AuxiliarySample, Criterion, PairPrediction, Rubric
 from .utils import (
+    append_jsonl,
     build_rar_rubric_text,
+    compose_condition_name,
+    get_auxiliary_samples_path,
     get_condition_specs,
     get_meta_eval_pairs_path,
     get_pair_predictions_path,
+    get_rrd_weighting_mode,
     get_rubric_output_path,
+    load_auxiliary_samples,
     load_config,
     load_meta_eval_pairs,
     load_prompt_template,
@@ -20,7 +28,6 @@ from .utils import (
     predict_pairwise_winner,
     read_jsonl,
     stable_hash,
-    write_jsonl,
 )
 from .utils_openai import create_chat_completion, parse_json_response, preflight_chat_completion
 
@@ -98,6 +105,7 @@ def _evaluate_pairwise_judge(
             temperature=config["pairwise_evaluation"]["temperature"],
             max_output_tokens=config["pairwise_evaluation"]["max_output_tokens"],
             response_format_json=True,
+            reasoning_effort=config["pairwise_evaluation"].get("reasoning_effort"),
         )
         try:
             winner, justification = _parse_pairwise_judge_output(raw_output)
@@ -131,6 +139,7 @@ def _evaluate_binary_criterion(
             temperature=config["binary_rubric_evaluation"]["temperature"],
             max_output_tokens=config["binary_rubric_evaluation"]["max_output_tokens"],
             response_format_json=False,
+            reasoning_effort=config["binary_rubric_evaluation"].get("reasoning_effort"),
         )
         try:
             return BinaryEvalResult(passed=_parse_yes_no(raw_output), parse_failure=False, raw_output=raw_output)
@@ -152,6 +161,107 @@ def _load_rubric_lookup(config: dict[str, object], split: str) -> dict[str, dict
         else:
             lookup[spec.condition_name] = {rubric.prompt_id: rubric for rubric in rows}
     return lookup
+
+
+def _build_auxiliary_matrix(
+    *,
+    config: dict[str, object],
+    evaluator_model: str,
+    prompt: str,
+    criteria: list[Criterion],
+    sampled_responses: list[AuxiliarySample],
+    smoke_test: bool,
+    cache_key_prefix: tuple[str, str],
+    eval_template: str,
+    eval_cache: dict[tuple[str, str, str, str], BinaryEvalResult],
+) -> tuple[np.ndarray, int]:
+    matrix = np.zeros((len(sampled_responses), len(criteria)), dtype=int)
+    parse_failure_count = 0
+    for row_index, sample in enumerate(sampled_responses):
+        for col_index, criterion in enumerate(criteria):
+            cache_key = (*cache_key_prefix, sample.sample_id, criterion.id)
+            cached = eval_cache.get(cache_key)
+            if cached is None:
+                prompt_text = eval_template.format(prompt=prompt, response=sample.response, rubric=criterion.text_ko)
+                cached = _evaluate_binary_criterion(
+                    config=config,
+                    evaluator_model=evaluator_model,
+                    prompt_text=prompt_text,
+                    smoke_test=smoke_test,
+                    smoke_key="||".join(cache_key),
+                )
+                eval_cache[cache_key] = cached
+            matrix[row_index, col_index] = int(cached.passed)
+            parse_failure_count += int(cached.parse_failure)
+    return matrix, parse_failure_count
+
+
+def _resolve_rrd_weight_result(
+    *,
+    config: dict[str, object],
+    requested_mode: str,
+    spec_condition_name: str,
+    scope_id: str,
+    prompt: str,
+    criteria: list[Criterion],
+    sampled_responses: list[AuxiliarySample],
+    evaluator_model: str,
+    smoke_test: bool,
+    eval_template: str,
+    eval_cache: dict[tuple[str, str, str, str], BinaryEvalResult],
+    weight_cache: dict[tuple[str, str], RrdWeightResult],
+) -> RrdWeightResult:
+    cache_key = (spec_condition_name, scope_id)
+    cached = weight_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if requested_mode == "llm":
+        result = compute_llm_weights(criteria)
+        weight_cache[cache_key] = result
+        return result
+    if requested_mode == "uniform":
+        result = compute_uniform_weights(criteria)
+        weight_cache[cache_key] = result
+        return result
+
+    matrix, aux_parse_failure_count = _build_auxiliary_matrix(
+        config=config,
+        evaluator_model=evaluator_model,
+        prompt=prompt,
+        criteria=criteria,
+        sampled_responses=sampled_responses,
+        smoke_test=smoke_test,
+        cache_key_prefix=cache_key,
+        eval_template=eval_template,
+        eval_cache=eval_cache,
+    )
+    result = compute_wu_weights(
+        criteria,
+        matrix,
+        covariance_ridge=float(config["binary_rubric_evaluation"].get("wu_covariance_ridge", 1e-4)),
+        min_covariance_samples=int(
+            config["binary_rubric_evaluation"].get(
+                "wu_min_covariance_samples",
+                config["auxiliary_response_generation"]["num_samples"],
+            )
+        ),
+        negative_weight_handling=str(
+            config["binary_rubric_evaluation"].get("wu_negative_weight_handling", "clip_and_renorm")
+        ),
+    )
+    diagnostics = dict(result.diagnostics)
+    diagnostics["matrix_shape"] = list(matrix.shape)
+    diagnostics["aux_parse_failure_count"] = aux_parse_failure_count
+    result = RrdWeightResult(
+        mode_requested=result.mode_requested,
+        mode_used=result.mode_used,
+        weights_by_id=result.weights_by_id,
+        fallback_used=result.fallback_used,
+        diagnostics=diagnostics,
+    )
+    weight_cache[cache_key] = result
+    return result
 
 
 def _score_response_with_rrd(
@@ -193,7 +303,15 @@ def main() -> None:
     args = parse_common_args()
     config = load_config(args.config, smoke_test=args.smoke_test)
     pairs = load_meta_eval_pairs(get_meta_eval_pairs_path())
+    condition_specs = get_condition_specs(config)
     evaluator_model = str(config["models"]["evaluator_model"])
+    weighting_mode = get_rrd_weighting_mode(config, args.rrd_weighting_mode)
+    auxiliary_samples = load_auxiliary_samples(get_auxiliary_samples_path())
+    samples_by_prompt: dict[str, list[AuxiliarySample]] = {}
+    for sample in auxiliary_samples:
+        samples_by_prompt.setdefault(sample.prompt_id, []).append(sample)
+    for prompt_id in samples_by_prompt:
+        samples_by_prompt[prompt_id].sort(key=lambda item: item.sample_id)
 
     baseline_template = load_prompt_template("configs/prompts/pairwise_baseline_judge_ko.txt")
     rubric_judge_template = load_prompt_template("configs/prompts/pairwise_rubric_judge_ko.txt")
@@ -210,14 +328,43 @@ def main() -> None:
             ),
             temperature=config["pairwise_evaluation"]["temperature"],
             max_output_tokens=64,
+            reasoning_effort=config["pairwise_evaluation"].get("reasoning_effort"),
         )
 
     rubric_lookup = _load_rubric_lookup(config, "full")
-    predictions: list[PairPrediction] = []
     binary_eval_cache: dict[tuple[str, str, str, str], BinaryEvalResult] = {}
+    weight_cache: dict[tuple[str, str], RrdWeightResult] = {}
+    output_path = get_pair_predictions_path(weighting_mode=weighting_mode)
+    active_condition_names = {spec.condition_name for spec in condition_specs}
+    completed_prediction_keys = {
+        (str(row["pair_id"]), compose_condition_name(str(row["method"]), row.get("generator_family")))
+        for row in read_jsonl(output_path)
+        if compose_condition_name(str(row["method"]), row.get("generator_family")) in active_condition_names
+    }
+    total_predictions = len(pairs) * len(condition_specs)
+    remaining_predictions = total_predictions - len(completed_prediction_keys)
+    print(
+        "Starting pairwise evaluation "
+        f"pairs={len(pairs)} "
+        f"conditions={len(condition_specs)} "
+        f"weighting_mode={weighting_mode} "
+        f"already_written={len(completed_prediction_keys)} "
+        f"remaining={remaining_predictions}",
+        flush=True,
+    )
+    if remaining_predictions <= 0:
+        print("No remaining predictions for the active condition set.", flush=True)
+        return
+
+    newly_written = 0
+    next_progress_mark = 100
 
     for pair in pairs:
-        for spec in get_condition_specs(config):
+        batch_rows: list[dict[str, object]] = []
+        for spec in condition_specs:
+            prediction_key = (pair.pair_id, spec.condition_name)
+            if prediction_key in completed_prediction_keys:
+                continue
             task_context = _build_task_context(pair.prompt)
             if spec.eval_protocol == "pairwise_judge":
                 if spec.method == "pairwise_baseline":
@@ -241,30 +388,46 @@ def main() -> None:
                     smoke_test=config["experiment"]["smoke_test"],
                     smoke_key=f"{pair.pair_id}:{spec.condition_name}",
                 )
-                predictions.append(
-                    PairPrediction(
-                        pair_id=pair.pair_id,
-                        method=spec.method,
-                        generator_family=spec.generator_family,
-                        generator_model=spec.generator_model,
-                        eval_protocol="pairwise_judge",
-                        pred_preference=winner,
-                        gold_preference=pair.gold_preference,  # type: ignore[arg-type]
-                        justification=justification,
-                        parse_failure=parse_failure,
-                        raw_output=raw_output,
-                    )
+                prediction = PairPrediction(
+                    pair_id=pair.pair_id,
+                    method=spec.method,
+                    generator_family=spec.generator_family,
+                    generator_model=spec.generator_model,
+                    eval_protocol="pairwise_judge",
+                    pred_preference=winner,
+                    gold_preference=pair.gold_preference,  # type: ignore[arg-type]
+                    justification=justification,
+                    parse_failure=parse_failure,
+                    raw_output=raw_output,
                 )
+                batch_rows.append(prediction.model_dump(mode="json"))
+                completed_prediction_keys.add(prediction_key)
+                newly_written += 1
                 continue
 
             rubric = rubric_lookup[spec.condition_name][pair.pair_id if spec.rubric_scope == "pair" else pair.prompt_id]
             scope_id = pair.pair_id if spec.rubric_scope == "pair" else pair.prompt_id
+            weight_result = _resolve_rrd_weight_result(
+                config=config,
+                requested_mode=weighting_mode,
+                spec_condition_name=spec.condition_name,
+                scope_id=scope_id,
+                prompt=pair.prompt,
+                criteria=rubric.criteria,
+                sampled_responses=samples_by_prompt.get(pair.prompt_id, []),
+                evaluator_model=evaluator_model,
+                smoke_test=config["experiment"]["smoke_test"],
+                eval_template=binary_eval_template,
+                eval_cache=binary_eval_cache,
+                weight_cache=weight_cache,
+            )
+            weighted_criteria = apply_weight_result(rubric.criteria, weight_result)
             score_a, parse_a, pass_count_a = _score_response_with_rrd(
                 config=config,
                 evaluator_model=evaluator_model,
                 prompt=pair.prompt,
                 response_text=pair.response_a,
-                criteria=rubric.criteria,
+                criteria=weighted_criteria,
                 smoke_test=config["experiment"]["smoke_test"],
                 cache_key_prefix=(spec.condition_name, scope_id, pair.response_a),
                 eval_template=binary_eval_template,
@@ -275,37 +438,61 @@ def main() -> None:
                 evaluator_model=evaluator_model,
                 prompt=pair.prompt,
                 response_text=pair.response_b,
-                criteria=rubric.criteria,
+                criteria=weighted_criteria,
                 smoke_test=config["experiment"]["smoke_test"],
                 cache_key_prefix=(spec.condition_name, scope_id, pair.response_b),
                 eval_template=binary_eval_template,
                 eval_cache=binary_eval_cache,
             )
-            predictions.append(
-                PairPrediction(
-                    pair_id=pair.pair_id,
-                    method=spec.method,
-                    generator_family=spec.generator_family,
-                    generator_model=spec.generator_model,
-                    eval_protocol="binary_rubric_aggregation",
-                    pred_preference=predict_pairwise_winner(score_a, score_b, tie_breaker=str(config["experiment"]["pairwise_tie_breaker"])),
-                    gold_preference=pair.gold_preference,  # type: ignore[arg-type]
-                    score_a=score_a,
-                    score_b=score_b,
-                    parse_failure=parse_a or parse_b,
-                    raw_output=json.dumps(
-                        {
-                            "criterion_count": len(rubric.criteria),
-                            "pass_count_a": pass_count_a,
-                            "pass_count_b": pass_count_b,
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
+            prediction = PairPrediction(
+                pair_id=pair.pair_id,
+                method=spec.method,
+                generator_family=spec.generator_family,
+                generator_model=spec.generator_model,
+                eval_protocol="binary_rubric_aggregation",
+                pred_preference=predict_pairwise_winner(score_a, score_b, tie_breaker=str(config["experiment"]["pairwise_tie_breaker"])),
+                gold_preference=pair.gold_preference,  # type: ignore[arg-type]
+                score_a=score_a,
+                score_b=score_b,
+                parse_failure=parse_a or parse_b,
+                weighting_mode_requested=weight_result.mode_requested,
+                weighting_mode_used=weight_result.mode_used,
+                weighting_fallback=weight_result.fallback_used,
+                raw_output=json.dumps(
+                    {
+                        "criterion_count": len(weighted_criteria),
+                        "pass_count_a": pass_count_a,
+                        "pass_count_b": pass_count_b,
+                        "weighting_mode_requested": weight_result.mode_requested,
+                        "weighting_mode_used": weight_result.mode_used,
+                        "weighting_fallback": weight_result.fallback_used,
+                        "weighting_diagnostics": weight_result.diagnostics,
+                    },
+                    ensure_ascii=False,
+                ),
             )
+            batch_rows.append(prediction.model_dump(mode="json"))
+            completed_prediction_keys.add(prediction_key)
+            newly_written += 1
 
-    write_jsonl(get_pair_predictions_path(), [prediction.model_dump(mode="json") for prediction in predictions])
-    print(f"Wrote {len(predictions)} pairwise predictions for full dataset")
+        if batch_rows:
+            append_jsonl(output_path, batch_rows)
+
+        while newly_written >= next_progress_mark:
+            print(
+                "Progress "
+                f"newly_written={newly_written}/{remaining_predictions} "
+                f"total_output={len(completed_prediction_keys)}/{total_predictions} "
+                f"last_pair={pair.pair_id}",
+                flush=True,
+            )
+            next_progress_mark += 100
+
+    print(
+        f"Wrote {newly_written} new pairwise predictions for full dataset "
+        f"(active conditions={len(condition_specs)})",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

@@ -70,13 +70,19 @@ rubric_generation:
 
 pairwise_evaluation:
   temperature: 0.0
-  max_output_tokens: 512
+  max_output_tokens: 4096
   json_retry_limit: 2
+  reasoning_effort: low
 
 binary_rubric_evaluation:
   temperature: 0.0
-  max_output_tokens: 64
+  max_output_tokens: 4096
   json_retry_limit: 2
+  reasoning_effort: low
+  weighting_mode: llm
+  wu_covariance_ridge: 1.0e-4
+  wu_min_covariance_samples: 8
+  wu_negative_weight_handling: clip_and_renorm
 
 runtime:
   generation_concurrency: 30

@@ -98,6 +98,8 @@ def create_chat_completion(
     max_output_tokens: int,
     top_p: float | None = None,
     response_format_json: bool = False,
+    reasoning_effort: str | None = None,
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     client = get_openai_client(config)
     last_exception: Exception | None = None
@@ -112,6 +114,10 @@ def create_chat_completion(
             body["top_p"] = top_p
         if response_format_json:
             body["response_format"] = {"type": "json_object"}
+        if reasoning_effort is not None:
+            body["reasoning_effort"] = reasoning_effort
+        if extra_body:
+            body["extra_body"] = extra_body
 
         for max_key in ("max_completion_tokens", "max_tokens"):
             trial_body = dict(body)
@@ -177,6 +183,7 @@ def preflight_chat_completion(
     temperature: float | None,
     max_output_tokens: int,
     top_p: float | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     try:
         create_chat_completion(
@@ -187,6 +194,7 @@ def preflight_chat_completion(
             max_output_tokens=max_output_tokens,
             top_p=top_p,
             response_format_json=False,
+            reasoning_effort=reasoning_effort,
         )
     except Exception as exc:
         raise _augment_openai_error(exc, model=model, temperature=temperature, top_p=top_p) from exc

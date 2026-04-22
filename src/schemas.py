@@ -98,3 +98,6 @@ class PairPrediction(StrictBaseModel):
     justification: str | None = None
     parse_failure: bool | None = None
     raw_output: str | None = None
+    weighting_mode_requested: str | None = None
+    weighting_mode_used: str | None = None
+    weighting_fallback: bool | None = None

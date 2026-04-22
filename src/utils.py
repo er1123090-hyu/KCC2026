@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ def parse_common_args(*, require_split: bool = False) -> argparse.Namespace:
     if require_split:
         parser.add_argument("--split", required=True, choices=["calibration", "test"])
     parser.add_argument("--smoke_test", action="store_true")
+    parser.add_argument("--rrd_weighting_mode", choices=["llm", "uniform", "wu"])
     return parser.parse_args()
 
 
@@ -241,6 +243,26 @@ def get_results_path(filename: str) -> Path:
     return resolve_path(Path("results/raw") / filename)
 
 
+def get_rrd_weighting_mode(config: dict[str, Any], cli_value: str | None = None) -> str:
+    mode = (
+        cli_value
+        or os.environ.get("KCC_RRD_WEIGHTING_MODE")
+        or config.get("binary_rubric_evaluation", {}).get("weighting_mode")
+        or "llm"
+    )
+    normalized = str(mode).strip().lower()
+    if normalized not in {"llm", "uniform", "wu"}:
+        raise RuntimeError(f"Unsupported RRD weighting mode: {mode!r}")
+    return normalized
+
+
+def _results_suffix_for_weighting_mode(weighting_mode: str | None = None) -> str:
+    normalized = (weighting_mode or "").strip().lower()
+    if not normalized or normalized == "llm":
+        return ""
+    return f"_{normalized}"
+
+
 def get_meta_eval_pairs_path() -> Path:
     return get_processed_path("meta_eval_pairs.jsonl")
 
@@ -277,18 +299,20 @@ def get_judge_scores_path(split: str) -> Path:
     return get_results_path(f"judge_scores_{split}.jsonl")
 
 
-def get_pair_predictions_path(split: str | None = None) -> Path:
+def get_pair_predictions_path(split: str | None = None, *, weighting_mode: str | None = None) -> Path:
+    suffix = _results_suffix_for_weighting_mode(weighting_mode)
     if split is None:
-        return get_results_path("pair_predictions.jsonl")
-    return get_results_path(f"pair_predictions_{split}.jsonl")
+        return get_results_path(f"pair_predictions{suffix}.jsonl")
+    return get_results_path(f"pair_predictions_{split}{suffix}.jsonl")
 
 
 def get_thresholds_path() -> Path:
     return get_results_path("selected_tie_thresholds.json")
 
 
-def get_run_manifest_path() -> Path:
-    return get_results_path("run_manifest.json")
+def get_run_manifest_path(*, weighting_mode: str | None = None) -> Path:
+    suffix = _results_suffix_for_weighting_mode(weighting_mode)
+    return get_results_path(f"run_manifest{suffix}.json")
 
 
 def compose_condition_name(method: str, generator_family: str | None = None) -> str:
@@ -343,7 +367,31 @@ def get_condition_specs(config: dict[str, Any]) -> list[ConditionSpec]:
                 ),
             ]
         )
-    return specs
+    method_allowlist = {
+        item.strip()
+        for item in os.environ.get("KCC_METHOD_ALLOWLIST", "").split(",")
+        if item.strip()
+    }
+    condition_allowlist = {
+        item.strip()
+        for item in os.environ.get("KCC_CONDITION_ALLOWLIST", "").split(",")
+        if item.strip()
+    }
+    if not method_allowlist and not condition_allowlist:
+        return specs
+
+    filtered = [
+        spec
+        for spec in specs
+        if (not method_allowlist or spec.method in method_allowlist)
+        and (not condition_allowlist or spec.condition_name in condition_allowlist)
+    ]
+    if not filtered:
+        raise RuntimeError(
+            "Condition filters removed every condition. "
+            "Check KCC_METHOD_ALLOWLIST / KCC_CONDITION_ALLOWLIST."
+        )
+    return filtered
 
 
 def load_meta_eval_pairs(path: str | Path) -> list[MetaEvalPair]:
