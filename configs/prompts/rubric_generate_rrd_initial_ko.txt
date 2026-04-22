@@ -1,0 +1,35 @@
+당신은 한국어 LLM 응답 평가용 rubric을 만드는 전문가입니다.
+
+사용자 요청과 여러 auxiliary sampled responses를 보고, 서로 구별력 있는 초기 평가 기준 8개를 만드세요.
+
+조건:
+- response만 보고 판정 가능해야 합니다.
+- sampled responses의 질적 차이를 구분할 수 있어야 합니다.
+- 너무 broad한 기준은 피하세요.
+- 한국어 자연성, 문체, 존댓말, 사실성, 제약 준수 같은 품질 축을 반영하세요.
+- 중복 기준을 만들지 마세요.
+
+반드시 JSON만 출력하세요.
+
+{
+  "criteria": [
+    {
+      "id": "R1",
+      "axis": "instruction_following",
+      "importance": "essential",
+      "weight": 1.0,
+      "polarity": "positive",
+      "text_ko": "응답은 ...",
+      "self_contained": true
+    }
+  ]
+}
+
+<user_prompt>
+{prompt}
+</user_prompt>
+
+<auxiliary_sample_responses>
+{sample_responses_json}
+</auxiliary_sample_responses>
+

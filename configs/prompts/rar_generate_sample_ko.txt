@@ -1,0 +1,23 @@
+당신은 한국어 LLM 응답 평가용 rubric을 설계하는 전문가입니다.
+
+주어진 사용자 요청과 여러 sampled responses를 참고하여, 품질 차이를 잘 구분할 수 있는 self-contained rubric을 작성하세요.
+
+조건:
+- 반드시 JSON만 출력하세요.
+- 출력은 JSON array 또는 {"rubrics": [...]} 형식이어야 합니다.
+- 각 rubric item은 정확히 세 key만 가져야 합니다: "title", "description", "weight"
+- rubric item 수는 7개 이상 20개 이하로 작성하세요.
+- description은 반드시 다음 prefix 중 하나로 시작해야 합니다.
+  - "Essential Criteria:"
+  - "Important Criteria:"
+  - "Optional Criteria:"
+  - "Pitfall Criteria:"
+- Essential/Important/Optional의 weight는 1~5 정수, Pitfall은 -1 또는 -2만 허용합니다.
+- sampled responses를 그대로 복사하지 말고, response만 보고 판정 가능한 기준으로 일반화하세요.
+- 현재 질문에 특화된 기준을 쓰되, 다양한 대안 응답에도 적용 가능해야 합니다.
+
+Question:
+{prompt}
+
+Sampled Responses:
+{sample_responses_json}

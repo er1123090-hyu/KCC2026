@@ -1,0 +1,1 @@
+{"custom_id": "probe_responses_low_4096", "method": "POST", "url": "/v1/responses", "body": {"model": "gpt-5", "input": "한국어로 서울의 봄 날씨를 한 문단으로 설명해 주세요.", "max_output_tokens": 4096, "reasoning": {"effort": "low"}}}

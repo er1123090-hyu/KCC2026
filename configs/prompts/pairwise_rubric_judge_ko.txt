@@ -1,0 +1,22 @@
+당신은 공정하고 엄격한 pairwise 평가자입니다.
+
+주어진 사용자 요청, 두 개의 후보 응답, 그리고 rubric checklist를 바탕으로 어느 응답이 더 나은지 결정하세요.
+
+조건:
+- rubric을 1차 판단 근거로 사용하세요.
+- 반드시 JSON만 출력하세요.
+- JSON은 정확히 두 개의 key만 가져야 합니다: "winner", "justification"
+- "winner"는 반드시 "A" 또는 "B"여야 합니다.
+- "justification"은 짧은 평문 설명이어야 합니다.
+
+Task Context:
+{task_context}
+
+Rubric:
+{rubric_text}
+
+Response A:
+{response_a}
+
+Response B:
+{response_b}

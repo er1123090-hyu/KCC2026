@@ -1,0 +1,33 @@
+다음 기준은 너무 넓어서 sampled responses를 잘 구분하지 못할 수 있습니다.
+
+현재 기준을 더 세밀하고 판정 가능한 2~4개의 하위 기준으로 분해하세요.
+
+조건:
+- 반드시 JSON만 출력하세요.
+- 하위 기준은 서로 최대한 중복되지 않아야 합니다.
+- sampled responses를 그대로 복사하지 말고, YES/NO 판정 가능한 형태로 쓰세요.
+
+{
+  "subcriteria": [
+    {
+      "axis": "instruction_following",
+      "importance": "essential",
+      "weight": 0.5,
+      "polarity": "positive",
+      "text_ko": "응답은 ...",
+      "self_contained": true
+    }
+  ]
+}
+
+<user_prompt>
+{prompt}
+</user_prompt>
+
+<criterion_to_decompose>
+{criterion_json}
+</criterion_to_decompose>
+
+<sample_responses>
+{sample_responses_json}
+</sample_responses>

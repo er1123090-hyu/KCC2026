@@ -1,0 +1,6 @@
+{
+  "total_raw_pairs": 1566,
+  "dropped_tie_pair_count": 170,
+  "written_non_tie_pair_count": 1396,
+  "dropped_tie_prompt_count": 160
+}

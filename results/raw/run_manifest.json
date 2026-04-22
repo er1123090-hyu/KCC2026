@@ -1,0 +1,57 @@
+{
+  "experiment_name": "SMOKE_TEST_NOT_FOR_PAPER korean_rubric_grounding_main_v1",
+  "timestamp": "2026-04-21T07:59:31.166171+00:00",
+  "git_hash": "07755d2e6d22cdc1ec5da4b8d52c862297401c54",
+  "models": {
+    "evaluator_model": "gpt-oss-120b",
+    "strong_sample_generator": "gpt-5",
+    "rubric_generators": {
+      "qwen_small": "Qwen/Qwen3-4B-FP8",
+      "qwen_large": "Qwen/Qwen3-32B",
+      "gemma_small": "google/gemma-4-E4B-it",
+      "gemma_large": "google/gemma-4-31B-it"
+    }
+  },
+  "counts": {
+    "total_meta_eval_pairs": 24,
+    "calibration_pairs": 5,
+    "test_pairs": 19,
+    "unique_prompts_calibration": 5,
+    "unique_prompts_test": 19,
+    "preference_exemplars": 5,
+    "auxiliary_samples_generated": 40,
+    "rubrics_generated_by_condition": {
+      "pref_pair_oneshot__qwen_small": 5,
+      "sample_oneshot__qwen_small": 5,
+      "sample_rrd__qwen_small": 5,
+      "pref_pair_oneshot__qwen_large": 5,
+      "sample_oneshot__qwen_large": 5,
+      "sample_rrd__qwen_large": 5,
+      "pref_pair_oneshot__gemma_small": 5,
+      "sample_oneshot__gemma_small": 5,
+      "sample_rrd__gemma_small": 5,
+      "pref_pair_oneshot__gemma_large": 5,
+      "sample_oneshot__gemma_large": 5,
+      "sample_rrd__gemma_large": 5,
+      "direct_likert": 0,
+      "generic_rubric": 1
+    },
+    "judge_scores_written_by_condition": {
+      "direct_likert": 10,
+      "generic_rubric": 10,
+      "pref_pair_oneshot__qwen_small": 10,
+      "sample_oneshot__qwen_small": 10,
+      "sample_rrd__qwen_small": 10,
+      "pref_pair_oneshot__qwen_large": 10,
+      "sample_oneshot__qwen_large": 10,
+      "sample_rrd__qwen_large": 10,
+      "pref_pair_oneshot__gemma_small": 10,
+      "sample_oneshot__gemma_small": 10,
+      "sample_rrd__gemma_small": 10,
+      "pref_pair_oneshot__gemma_large": 10,
+      "sample_oneshot__gemma_large": 10,
+      "sample_rrd__gemma_large": 10
+    }
+  },
+  "fallback_counts": {}
+}

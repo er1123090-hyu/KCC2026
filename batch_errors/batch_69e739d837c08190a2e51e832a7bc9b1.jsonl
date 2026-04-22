@@ -1,0 +1,1 @@
+{"id": "batch_req_69e739e269888190a73282ee800dd61a", "custom_id": "probe_no_temp_keep_top_p", "response": {"status_code": 400, "request_id": "8bd7cef7-89cd-49d9-a4d5-39d5fc3cc15d", "body": {"error": {"message": "Unsupported parameter: 'top_p' is not supported with this model.", "type": "invalid_request_error", "param": "top_p", "code": "unsupported_parameter"}}}, "error": null}

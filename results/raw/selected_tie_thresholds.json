@@ -1,0 +1,128 @@
+{
+  "direct_likert": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.6,
+      "0.05": 0.6,
+      "0.10": 0.6,
+      "0.15": 0.4
+    }
+  },
+  "generic_rubric": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.6,
+      "0.05": 0.6,
+      "0.10": 0.6,
+      "0.15": 0.6
+    }
+  },
+  "pref_pair_oneshot__qwen_small": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.6,
+      "0.05": 0.6,
+      "0.10": 0.6,
+      "0.15": 0.4
+    }
+  },
+  "sample_oneshot__qwen_small": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.4,
+      "0.05": 0.4,
+      "0.10": 0.4,
+      "0.15": 0.4
+    }
+  },
+  "sample_rrd__qwen_small": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.6,
+      "0.05": 0.6,
+      "0.10": 0.6,
+      "0.15": 0.6
+    }
+  },
+  "pref_pair_oneshot__qwen_large": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.0,
+      "0.05": 0.0,
+      "0.10": 0.0,
+      "0.15": 0.0
+    }
+  },
+  "sample_oneshot__qwen_large": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.8,
+      "0.05": 0.8,
+      "0.10": 0.8,
+      "0.15": 0.8
+    }
+  },
+  "sample_rrd__qwen_large": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.4,
+      "0.05": 0.4,
+      "0.10": 0.4,
+      "0.15": 0.4
+    }
+  },
+  "pref_pair_oneshot__gemma_small": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.4,
+      "0.05": 0.4,
+      "0.10": 0.4,
+      "0.15": 0.4
+    }
+  },
+  "sample_oneshot__gemma_small": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.6,
+      "0.05": 0.6,
+      "0.10": 0.6,
+      "0.15": 0.6
+    }
+  },
+  "sample_rrd__gemma_small": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.0,
+      "0.05": 0.0,
+      "0.10": 0.0,
+      "0.15": 0.0
+    }
+  },
+  "pref_pair_oneshot__gemma_large": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.0,
+      "0.05": 0.0,
+      "0.10": 0.0,
+      "0.15": 0.0
+    }
+  },
+  "sample_oneshot__gemma_large": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.4,
+      "0.05": 0.4,
+      "0.10": 0.4,
+      "0.15": 0.4
+    }
+  },
+  "sample_rrd__gemma_large": {
+    "tie_threshold": 0.0,
+    "candidate_accuracies": {
+      "0.00": 0.6,
+      "0.05": 0.6,
+      "0.10": 0.6,
+      "0.15": 0.6
+    }
+  }
+}

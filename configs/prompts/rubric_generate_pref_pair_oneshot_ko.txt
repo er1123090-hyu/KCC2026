@@ -1,0 +1,35 @@
+당신은 한국어 LLM 응답 평가용 rubric을 만드는 전문가입니다.
+
+사용자 요청과 유사한 preference exemplars를 보고, 현재 사용자 요청에 특화된 평가 기준 6개를 만드세요.
+
+목표:
+- chosen/rejected exemplars에서 드러나는 인간 선호 방향을 일반화하되, 현재 prompt에 맞게 criterion을 재구성하세요.
+- response만 보고 판정 가능해야 합니다.
+- 한국어 자연성, 문체, 존댓말, 사실성, 제약 준수 같은 품질 축을 반영하세요.
+- exemplar 문장을 그대로 복사하지 마세요.
+- 너무 추상적이거나 중복되는 기준은 피하세요.
+
+반드시 JSON만 출력하세요.
+
+{
+  "criteria": [
+    {
+      "id": "P1",
+      "axis": "instruction_following",
+      "importance": "essential",
+      "weight": 1.0,
+      "polarity": "positive",
+      "text_ko": "응답은 ...",
+      "self_contained": true
+    }
+  ]
+}
+
+<user_prompt>
+{prompt}
+</user_prompt>
+
+<preference_exemplars>
+{exemplars_json}
+</preference_exemplars>
+

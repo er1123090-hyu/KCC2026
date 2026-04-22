@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "korean-rubric-grounding-main"
+version = "0.1.0"
+description = "Main raw experiment for Korean rubric-grounded judge construction"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "datasets",
+  "transformers",
+  "accelerate",
+  "torch",
+  "openai",
+  "pydantic",
+  "pandas",
+  "numpy",
+  "scipy",
+  "scikit-learn",
+  "sentence-transformers",
+  "tqdm",
+  "pyyaml",
+  "jsonlines",
+  "tenacity",
+  "rich",
+]
+
+[tool.setuptools]
+packages = ["src"]
+

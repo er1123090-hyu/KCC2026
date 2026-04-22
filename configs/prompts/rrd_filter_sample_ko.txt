@@ -1,0 +1,27 @@
+다음 기준이 sampled responses를 구분하는 데 적절한지 판단하세요.
+
+제거해야 하는 기준:
+- 사용자 요청과 무관함
+- 응답만 보고 판정할 수 없음
+- 거의 모든 sampled responses에 동시에 적용됨
+- 다른 기준과 의미가 거의 중복됨
+- 지나치게 모호하거나 broad함
+
+반드시 JSON만 출력하세요.
+
+{
+  "keep": true,
+  "reason": "짧은 이유"
+}
+
+<user_prompt>
+{prompt}
+</user_prompt>
+
+<criterion>
+{criterion_json}
+</criterion>
+
+<sample_responses>
+{sample_responses_json}
+</sample_responses>
