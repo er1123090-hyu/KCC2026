@@ -1,19 +1,17 @@
-다음 기준이 sampled responses를 구분하는 데 적절한지 판단하세요.
+다음 기준을 reference-grounded recursive rubric refinement 관점에서 판정하세요.
 
 reference response는 quality guidance로만 참고하세요.
 
-제거해야 하는 기준:
-- 사용자 요청과 무관함
-- 응답만 보고 판정할 수 없음
-- 거의 모든 sampled responses에 동시에 적용됨
-- 다른 기준과 의미가 거의 중복됨
-- reference response의 표현만 베낀 기준
-- 지나치게 모호하거나 broad함
+판정 규칙:
+- keep=false: 사용자 요청과 무관하거나, 응답만 보고 판정할 수 없거나, reference response의 표현만 베꼈거나, 지나치게 모호함
+- keep=true, should_decompose=true: 기준 자체는 유효하지만 너무 broad하거나 서로 분리 가능한 여러 요구를 한 기준에 묶고 있음
+- keep=true, should_decompose=false: 기준이 유효하고 이미 충분히 구체적이며 YES/NO 판정 가능함
 
 반드시 JSON만 출력하세요.
 
 {
   "keep": true,
+  "should_decompose": false,
   "reason": "짧은 이유"
 }
 
@@ -28,7 +26,3 @@ reference response는 quality guidance로만 참고하세요.
 <criterion>
 {criterion_json}
 </criterion>
-
-<sample_responses>
-{sample_responses_json}
-</sample_responses>

@@ -526,6 +526,43 @@ def _run_rrd_filter_prompt(
     }
 
 
+def _run_rrd_reference_refinement_prompt(
+    *,
+    criterion: Criterion,
+    prompt: str,
+    reference_response: str,
+    generator_model: str,
+    config: dict[str, Any],
+    smoke_test: bool,
+    template_text: str,
+) -> tuple[bool, bool, dict[str, Any]]:
+    if smoke_test:
+        keep = int(stable_hash(prompt, criterion.id, reference_response, "keep", length=2), 16) % 5 != 0
+        should_decompose = keep and int(
+            stable_hash(prompt, criterion.id, reference_response, "decompose", length=2), 16
+        ) % 2 == 0
+        return keep, should_decompose, {"reason": "smoke_reference_refinement"}
+    prompt_text = render_prompt_template(
+        template_text,
+        prompt=prompt,
+        reference_response=reference_response,
+        criterion_json=criterion.model_dump_json(indent=2),
+    )
+    payload, raw_output = _call_model_json(
+        config=config,
+        model_id=generator_model,
+        prompt=prompt_text,
+        max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
+        temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
+        retries=2,
+        response_format_json=True,
+    )
+    return bool(payload.get("keep", False)), bool(payload.get("should_decompose", False)), {
+        "reason": payload.get("reason", ""),
+        "raw_output": raw_output,
+    }
+
+
 def _decompose_rrd_criterion(
     *,
     criterion: Criterion,
@@ -657,6 +694,100 @@ def _expand_rrd_criterion(
     return [criterion]
 
 
+def _expand_rrd_reference_criterion(
+    *,
+    criterion: Criterion,
+    prompt: str,
+    reference_response: str,
+    generator_model: str,
+    config: dict[str, Any],
+    depth: int,
+    smoke_test: bool,
+    filter_template: str,
+    decompose_template: str,
+    diagnostics: list[dict[str, Any]],
+) -> list[Criterion]:
+    keep, should_decompose, refine_meta = _run_rrd_reference_refinement_prompt(
+        criterion=criterion,
+        prompt=prompt,
+        reference_response=reference_response,
+        generator_model=generator_model,
+        config=config,
+        smoke_test=smoke_test,
+        template_text=filter_template,
+    )
+    diagnostics.append(
+        {
+            "criterion_id": criterion.id,
+            "depth": depth,
+            "event": "reference_refinement",
+            "keep": keep,
+            "should_decompose": should_decompose,
+            **refine_meta,
+        }
+    )
+    if not keep:
+        return []
+
+    if should_decompose and depth < config["rubric_generation"]["rrd_pairwise"]["max_depth"]:
+        try:
+            children = _decompose_rrd_criterion(
+                criterion=criterion,
+                prompt=prompt,
+                samples=[],
+                reference_response=reference_response,
+                generator_model=generator_model,
+                config=config,
+                smoke_test=smoke_test,
+                template_text=decompose_template,
+            )
+            expanded: list[Criterion] = []
+            for child_index, child in enumerate(children, start=1):
+                child.id = f"{criterion.id}_{child_index}"
+                expanded.extend(
+                    _expand_rrd_reference_criterion(
+                        criterion=child,
+                        prompt=prompt,
+                        reference_response=reference_response,
+                        generator_model=generator_model,
+                        config=config,
+                        depth=depth + 1,
+                        smoke_test=smoke_test,
+                        filter_template=filter_template,
+                        decompose_template=decompose_template,
+                        diagnostics=diagnostics,
+                    )
+                )
+            if expanded:
+                diagnostics.append(
+                    {
+                        "criterion_id": criterion.id,
+                        "depth": depth,
+                        "event": "reference_decomposed",
+                        "child_count": len(expanded),
+                    }
+                )
+                return expanded
+        except Exception as exc:
+            diagnostics.append(
+                {
+                    "criterion_id": criterion.id,
+                    "depth": depth,
+                    "event": "reference_decompose_failed",
+                    "error": str(exc),
+                }
+            )
+    elif should_decompose:
+        diagnostics.append(
+            {
+                "criterion_id": criterion.id,
+                "depth": depth,
+                "event": "reference_decompose_skipped_max_depth",
+            }
+        )
+    return [criterion]
+
+
 def _fallback_rrd_criteria(*, prompt_id: str, method: str, max_count: int) -> list[Criterion]:
     criteria = _mock_criteria(prompt_id=prompt_id, method=method, count=min(max_count, 4), prefix="F")
     total = sum(item.weight for item in criteria) or 1.0
@@ -686,13 +817,13 @@ def _generate_rrd_rubric(
     weight_template: str,
     method: str,
 ) -> Rubric:
-    reference_only_generation = method == "rrd_pairwise_reference"
+    reference_grounded_recursive_refinement = method == "rrd_pairwise_reference"
     metadata: dict[str, Any] = {
         "fallback_used": None,
         "errors": [],
         "auxiliary_sample_ids": [sample.sample_id for sample in samples],
         "reference_guidance_used": bool(reference_response),
-        "reference_only_generation": reference_only_generation,
+        "reference_grounded_recursive_refinement": reference_grounded_recursive_refinement,
     }
     try:
         if smoke_test:
@@ -729,14 +860,25 @@ def _generate_rrd_rubric(
             metadata["raw_output"] = raw_output
 
         diagnostics: list[dict[str, Any]] = []
-        if reference_only_generation:
-            expanded_criteria = list(initial_criteria)
-            diagnostics.append(
-                {
-                    "event": "reference_only_generation",
-                    "detail": "Skipped auxiliary-sample filter/decompose and used reference-only initial criteria.",
-                }
-            )
+        if reference_grounded_recursive_refinement:
+            if not reference_response:
+                raise RuntimeError("reference-grounded recursive refinement requires a reference response.")
+            expanded_criteria = []
+            for criterion in initial_criteria:
+                expanded_criteria.extend(
+                    _expand_rrd_reference_criterion(
+                        criterion=criterion,
+                        prompt=prompt,
+                        reference_response=reference_response,
+                        generator_model=generator_model,
+                        config=config,
+                        depth=0,
+                        smoke_test=smoke_test,
+                        filter_template=filter_template,
+                        decompose_template=decompose_template,
+                        diagnostics=diagnostics,
+                    )
+                )
         else:
             expanded_criteria = []
             for criterion in initial_criteria:
