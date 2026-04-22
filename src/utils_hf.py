@@ -67,7 +67,23 @@ def generate_text_with_hf(
 
     messages = [{"role": "user", "content": prompt}]
     try:
-        rendered_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        if "qwen3" in model_id.lower():
+            try:
+                rendered_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            except TypeError:
+                rendered_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    chat_template_kwargs={"enable_thinking": False},
+                )
+        else:
+            rendered_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     except Exception:
         rendered_prompt = prompt
 

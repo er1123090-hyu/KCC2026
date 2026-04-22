@@ -67,6 +67,21 @@ def _candidate_model_ids(model: str) -> list[str]:
     return candidates
 
 
+def _should_disable_qwen_thinking(model: str) -> bool:
+    raw_value = os.environ.get("KCC_DISABLE_QWEN_THINKING", "1").strip().lower()
+    disable_requested = raw_value not in {"0", "false", "no"}
+    return disable_requested and "qwen3" in model.lower()
+
+
+def _merge_extra_body_for_model(model: str, extra_body: dict[str, Any] | None) -> dict[str, Any] | None:
+    merged = dict(extra_body or {})
+    if _should_disable_qwen_thinking(model):
+        chat_template_kwargs = dict(merged.get("chat_template_kwargs") or {})
+        chat_template_kwargs["enable_thinking"] = False
+        merged["chat_template_kwargs"] = chat_template_kwargs
+    return merged or None
+
+
 def _responses_output_to_text(output: Any) -> str:
     chunks: list[str] = []
     for item in output or []:
@@ -104,6 +119,7 @@ def create_chat_completion(
     client = get_openai_client(config)
     last_exception: Exception | None = None
     for candidate_model in _candidate_model_ids(model):
+        merged_extra_body = _merge_extra_body_for_model(candidate_model, extra_body)
         body: dict[str, Any] = {
             "model": candidate_model,
             "messages": [{"role": "user", "content": prompt}],
@@ -116,8 +132,8 @@ def create_chat_completion(
             body["response_format"] = {"type": "json_object"}
         if reasoning_effort is not None:
             body["reasoning_effort"] = reasoning_effort
-        if extra_body:
-            body["extra_body"] = extra_body
+        if merged_extra_body:
+            body["extra_body"] = merged_extra_body
 
         for max_key in ("max_completion_tokens", "max_tokens"):
             trial_body = dict(body)

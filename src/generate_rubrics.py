@@ -149,7 +149,12 @@ def _call_hf_json(
 
 
 def _rubric_generation_backend() -> str:
-    backend = os.environ.get("KCC_RUBRIC_GENERATION_BACKEND", "hf").strip().lower()
+    raw_backend = os.environ.get("KCC_RUBRIC_GENERATION_BACKEND")
+    if raw_backend is None or not raw_backend.strip():
+        if os.environ.get("OPENAI_BASE_URL"):
+            return "openai_compatible"
+        return "hf"
+    backend = raw_backend.strip().lower()
     if backend not in {"hf", "openai_compatible"}:
         raise RuntimeError(
             "KCC_RUBRIC_GENERATION_BACKEND must be one of: 'hf', 'openai_compatible'. "
@@ -244,6 +249,7 @@ def _criteria_from_payload(
     key: str,
     prefix: str,
     exact_count: int | None = None,
+    min_count: int | None = None,
 ) -> list[Criterion]:
     raw_items = payload.get(key)
     if not isinstance(raw_items, list) or not raw_items:
@@ -256,6 +262,8 @@ def _criteria_from_payload(
             item["importance"] = "essential"
         elif importance in {"medium", "moderate"}:
             item["importance"] = "important"
+        elif importance in {"basic", "default"}:
+            item["importance"] = "optional"
         elif importance in {"low", "minor"}:
             item["importance"] = "optional"
         polarity = str(item.get("polarity", "")).strip().lower()
@@ -272,11 +280,25 @@ def _criteria_from_payload(
         item.setdefault("polarity", "positive")
         item.setdefault("self_contained", True)
         criteria.append(Criterion.model_validate(item))
-    if exact_count is not None:
-        if len(criteria) > exact_count:
-            criteria = criteria[:exact_count]
-        elif len(criteria) == 0:
-            raise ValueError(f"Expected {exact_count} criteria, found 0")
+    if min_count is not None and len(criteria) < min_count:
+        raise ValueError(f"Expected at least {min_count} criteria, found {len(criteria)}")
+    if exact_count is not None and len(criteria) > exact_count:
+        criteria = criteria[:exact_count]
+    return criteria
+
+
+def _normalize_criterion_weights(criteria: list[Criterion]) -> list[Criterion]:
+    if not criteria:
+        return criteria
+    weights = [abs(float(item.weight)) for item in criteria]
+    total = sum(weights)
+    if total <= 0:
+        uniform_weight = 1.0 / len(criteria)
+        for criterion in criteria:
+            criterion.weight = uniform_weight
+        return criteria
+    for criterion, weight in zip(criteria, weights):
+        criterion.weight = float(weight / total)
     return criteria
 
 
@@ -617,34 +639,58 @@ def _expand_rrd_criterion(
     decompose_template: str,
     diagnostics: list[dict[str, Any]],
 ) -> list[Criterion]:
-    keep, filter_meta = _run_rrd_filter_prompt(
-        criterion=criterion,
-        prompt=prompt,
-        samples=samples,
-        reference_response=reference_response,
-        generator_model=generator_model,
-        config=config,
-        smoke_test=smoke_test,
-        template_text=filter_template,
-    )
+    try:
+        keep, filter_meta = _run_rrd_filter_prompt(
+            criterion=criterion,
+            prompt=prompt,
+            samples=samples,
+            reference_response=reference_response,
+            generator_model=generator_model,
+            config=config,
+            smoke_test=smoke_test,
+            template_text=filter_template,
+        )
+    except Exception as exc:
+        keep = True
+        filter_meta = {"reason": "filter_failed_keep", "error": str(exc)}
+        diagnostics.append(
+            {
+                "criterion_id": criterion.id,
+                "depth": depth,
+                "event": "filter_failed_keep",
+                "error": str(exc),
+            }
+        )
     if not keep:
         diagnostics.append({"criterion_id": criterion.id, "depth": depth, "event": "filtered", **filter_meta})
         return []
 
-    satisfaction = [
-        int(
-            _judge_generation_satisfaction(
-                criterion=criterion,
-                prompt=prompt,
-                response_text=sample.response,
-                reference_response=reference_response,
-                generator_model=generator_model,
-                config=config,
-                smoke_test=smoke_test,
+    satisfaction: list[int] = []
+    for sample in samples:
+        try:
+            satisfied = int(
+                _judge_generation_satisfaction(
+                    criterion=criterion,
+                    prompt=prompt,
+                    response_text=sample.response,
+                    reference_response=reference_response,
+                    generator_model=generator_model,
+                    config=config,
+                    smoke_test=smoke_test,
+                )
             )
-        )
-        for sample in samples
-    ]
+        except Exception as exc:
+            satisfied = 0
+            diagnostics.append(
+                {
+                    "criterion_id": criterion.id,
+                    "depth": depth,
+                    "event": "satisfaction_failed",
+                    "sample_id": sample.sample_id,
+                    "error": str(exc),
+                }
+            )
+        satisfaction.append(satisfied)
     count = int(sum(satisfaction))
     diagnostics.append({"criterion_id": criterion.id, "depth": depth, "event": "satisfaction", "count": count})
 
@@ -825,6 +871,9 @@ def _generate_rrd_rubric(
         "reference_guidance_used": bool(reference_response),
         "reference_grounded_recursive_refinement": reference_grounded_recursive_refinement,
     }
+    initial_criteria: list[Criterion] = []
+    expanded_criteria: list[Criterion] = []
+    diagnostics: list[dict[str, Any]] = []
     try:
         if smoke_test:
             initial_criteria = _mock_criteria(
@@ -835,29 +884,63 @@ def _generate_rrd_rubric(
             )
             metadata["smoke_mock"] = True
         else:
+            target_initial_criteria = config["rubric_generation"]["rrd_pairwise"]["initial_criteria"]
             initial_prompt = render_prompt_template(
                 initial_template,
                 prompt=prompt,
                 reference_response=reference_response or "(none)",
                 sample_responses_json=_sample_responses_json(samples),
-                initial_criteria_count=config["rubric_generation"]["rrd_pairwise"]["initial_criteria"],
+                initial_criteria=target_initial_criteria,
+                initial_criteria_count=target_initial_criteria,
             )
-            payload, raw_output = _call_model_json(
-                config=config,
-                model_id=generator_model,
-                prompt=initial_prompt,
-                max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
-                temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
-                retries=2,
-                response_format_json=True,
-            )
-            initial_criteria = _criteria_from_payload(
-                payload,
-                key="criteria",
-                prefix="R",
-                exact_count=config["rubric_generation"]["rrd_pairwise"]["initial_criteria"],
-            )
-            metadata["raw_output"] = raw_output
+            last_initial_error: Exception | None = None
+            last_payload: dict[str, Any] | None = None
+            last_raw_output = ""
+            for attempt in range(2):
+                prompt_text = initial_prompt
+                if attempt > 0:
+                    prompt_text = (
+                        f"{initial_prompt}\n\n"
+                        f"중요: criteria 배열에는 반드시 정확히 {target_initial_criteria}개의 항목이 있어야 합니다. "
+                        "누락된 항목을 보완해서 다시 출력하세요."
+                    )
+                payload, raw_output = _call_model_json(
+                    config=config,
+                    model_id=generator_model,
+                    prompt=prompt_text,
+                    max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
+                    temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
+                    retries=2,
+                    response_format_json=True,
+                )
+                metadata["raw_output"] = raw_output
+                last_payload = payload
+                last_raw_output = raw_output
+                try:
+                    initial_criteria = _criteria_from_payload(
+                        payload,
+                        key="criteria",
+                        prefix="R",
+                        exact_count=target_initial_criteria,
+                        min_count=target_initial_criteria,
+                    )
+                    break
+                except Exception as exc:
+                    last_initial_error = exc
+            else:
+                if last_payload is None:
+                    raise RuntimeError("RRD initial criteria generation did not return a payload.")
+                initial_criteria = _criteria_from_payload(
+                    last_payload,
+                    key="criteria",
+                    prefix="R",
+                    exact_count=target_initial_criteria,
+                    min_count=max(1, target_initial_criteria - 1),
+                )
+                metadata["errors"].append(
+                    f"Accepted short initial criteria list after retries: {last_initial_error or 'unknown error'}"
+                )
+                metadata["raw_output"] = last_raw_output
 
         diagnostics: list[dict[str, Any]] = []
         if reference_grounded_recursive_refinement:
@@ -902,14 +985,22 @@ def _generate_rrd_rubric(
             raise RuntimeError("RRD left zero criteria after filtering/pruning.")
 
         expanded_criteria = _cap_criteria(expanded_criteria, config=config)
-        weighted_criteria, weight_meta = _assign_llm_weights(
-            criteria=expanded_criteria,
-            prompt=prompt,
-            reference_response=reference_response,
-            config=config,
-            template_text=weight_template,
-            model_id=generator_model,
-        )
+        try:
+            weighted_criteria, weight_meta = _assign_llm_weights(
+                criteria=expanded_criteria,
+                prompt=prompt,
+                reference_response=reference_response,
+                config=config,
+                template_text=weight_template,
+                model_id=generator_model,
+            )
+        except Exception as exc:
+            metadata["errors"].append(f"LLM weighting failed: {exc}")
+            weighted_criteria = _normalize_criterion_weights(expanded_criteria)
+            weight_meta = {
+                "fallback_mode": "uniform_from_rrd",
+                "error": str(exc),
+            }
         metadata["rrd_diagnostics"] = diagnostics
         metadata["weighting"] = weight_meta
         metadata["final_criterion_count"] = len(weighted_criteria)
@@ -924,6 +1015,27 @@ def _generate_rrd_rubric(
         )
     except Exception as exc:
         metadata["errors"].append(str(exc))
+        recovered_criteria = expanded_criteria or initial_criteria
+        if recovered_criteria:
+            recovered_criteria = _prune_redundant_criteria(recovered_criteria, config=config)
+            recovered_criteria = _cap_criteria(recovered_criteria, config=config)
+            recovered_criteria = _normalize_criterion_weights(recovered_criteria)
+            metadata["rrd_diagnostics"] = diagnostics
+            metadata["weighting"] = {
+                "fallback_mode": "uniform_from_partial_rrd",
+                "error": str(exc),
+            }
+            metadata["final_criterion_count"] = len(recovered_criteria)
+            metadata["recovered_from_partial_rrd"] = True
+            return Rubric(
+                prompt_id=prompt_id,
+                pair_id=pair_id,
+                method=method,
+                generator_family=generator_family,
+                generator_model=generator_model,
+                criteria=recovered_criteria,
+                generation_metadata=metadata,
+            )
         metadata["fallback_used"] = "rrd_static_fallback"
         return Rubric(
             prompt_id=prompt_id,
@@ -1064,6 +1176,9 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--smoke_test", action="store_true")
     parser.add_argument("--concurrency", type=int, default=None)
+    parser.add_argument("--prompt-limit", "--prompt_limit", dest="prompt_limit", type=int, default=None)
+    parser.add_argument("--prompt-offset", "--prompt_offset", dest="prompt_offset", type=int, default=0)
+    parser.add_argument("--output-split", default=None)
     parser.add_argument(
         "--method",
         choices=[
@@ -1074,9 +1189,13 @@ def main() -> None:
         ],
     )
     parser.add_argument("--generator_family")
-    parser.add_argument("--prompt_limit", type=int)
-    parser.add_argument("--prompt_id_file")
+    parser.add_argument("--prompt-id-file", "--prompt_id_file", dest="prompt_id_file")
     args = parser.parse_args()
+
+    if args.prompt_limit is not None and args.prompt_limit < 1:
+        raise RuntimeError("--prompt-limit must be >= 1")
+    if args.prompt_offset < 0:
+        raise RuntimeError("--prompt-offset must be >= 0")
 
     config = load_config(args.config, smoke_test=args.smoke_test)
     all_pairs = load_meta_eval_pairs(get_meta_eval_pairs_path())
@@ -1093,6 +1212,24 @@ def main() -> None:
         }
         if not prompt_id_allowlist:
             raise RuntimeError(f"prompt_id_file is empty: {prompt_id_path}")
+    if args.prompt_limit is not None or args.prompt_offset:
+        sorted_prompt_ids = sorted(prompt_rows)
+        slice_stop = None if args.prompt_limit is None else args.prompt_offset + args.prompt_limit
+        selected_prompt_ids = sorted_prompt_ids[args.prompt_offset:slice_stop]
+        if not selected_prompt_ids:
+            raise RuntimeError("Prompt subset selection is empty.")
+        selected_prompt_id_set = set(selected_prompt_ids)
+        all_pairs = [pair for pair in all_pairs if pair.prompt_id in selected_prompt_id_set]
+        prompt_rows = {prompt_id: prompt_rows[prompt_id] for prompt_id in selected_prompt_ids}
+    if prompt_id_allowlist is not None:
+        all_pairs = [pair for pair in all_pairs if pair.prompt_id in prompt_id_allowlist]
+        prompt_rows = {
+            prompt_id: payload
+            for prompt_id, payload in prompt_rows.items()
+            if prompt_id in prompt_id_allowlist
+        }
+        if not prompt_rows:
+            raise RuntimeError("Prompt allowlist selection is empty.")
     samples_by_prompt: dict[str, list[AuxiliarySample]] = defaultdict(list)
 
     templates = {
@@ -1123,8 +1260,8 @@ def main() -> None:
             samples_by_prompt[sample.prompt_id].append(sample)
         for prompt_id, samples in samples_by_prompt.items():
             expected = config["auxiliary_response_generation"]["num_samples"]
-            if len(samples) != expected:
-                raise RuntimeError(f"Prompt {prompt_id} expected {expected} auxiliary samples, found {len(samples)}")
+            if len(samples) < expected:
+                raise RuntimeError(f"Prompt {prompt_id} expected at least {expected} auxiliary samples, found {len(samples)}")
     generator_items = list(config["models"]["rubric_generators"].items())
     if args.generator_family:
         generator_items = [(family, model) for family, model in generator_items if family == args.generator_family]
@@ -1138,9 +1275,20 @@ def main() -> None:
     if configured_concurrency < 1:
         raise RuntimeError("generation concurrency must be >= 1")
 
+    output_split = args.output_split
+    if output_split is None and args.prompt_limit is not None:
+        start_index = args.prompt_offset
+        end_index = start_index + len(prompt_rows) - 1
+        output_split = f"prompts_{start_index:03d}_{end_index:03d}"
+    if output_split:
+        print(
+            f"Using subset output split='{output_split}' "
+            f"prompt_count={len(prompt_rows)} pair_count={len(all_pairs)}"
+        )
+
     for generator_family, generator_model in generator_items:
         for method in method_list:
-            output_path = get_rubric_output_path(method, generator_family)
+            output_path = get_rubric_output_path(method, generator_family, split=output_split)
             key_field = "pair_id" if method in {"rar_pairwise_reference", "rrd_pairwise_reference"} else "prompt_id"
             existing_rows = _load_output_rows(output_path, key_field=key_field)
 
@@ -1234,12 +1382,6 @@ def main() -> None:
                         executor.shutdown(wait=True, cancel_futures=False)
             else:
                 prompt_items = sorted(prompt_rows.items())
-                if prompt_id_allowlist is not None:
-                    prompt_items = [(prompt_id, payload) for prompt_id, payload in prompt_items if prompt_id in prompt_id_allowlist]
-                if args.prompt_limit is not None:
-                    if args.prompt_limit < 1:
-                        raise RuntimeError("--prompt_limit must be >= 1")
-                    prompt_items = prompt_items[: args.prompt_limit]
                 expected_rows = len(prompt_items)
                 completed = len(existing_rows)
                 _write_progress(
@@ -1256,8 +1398,10 @@ def main() -> None:
 
                 def build_prompt_row(prompt_id: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                     samples = sorted(samples_by_prompt.get(prompt_id, []), key=lambda item: item.sample_id)
-                    if len(samples) != config["auxiliary_response_generation"]["num_samples"]:
+                    expected = config["auxiliary_response_generation"]["num_samples"]
+                    if len(samples) < expected:
                         raise RuntimeError(f"Prompt {prompt_id} missing auxiliary samples for {method}")
+                    samples = samples[:expected]
                     rrd_samples = _select_rrd_samples(samples, config=config) if method == "rrd_pairwise_sample" else samples
                     if method == "rar_pairwise_sample":
                         rubric = _generate_rar_sample_rubric(

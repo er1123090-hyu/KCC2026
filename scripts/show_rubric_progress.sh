@@ -5,13 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-python_bin="${PYTHON_BIN:-${REPO_ROOT}/.venv/bin/python}"
+python_bin="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
 
 "${python_bin}" - <<'PY'
 import json
 from pathlib import Path
 
-root = Path("/data/minseo/KCC2026/korean-rubric-grounding-main/data/processed")
+root = Path.cwd() / "data/processed"
 progress_files = sorted(root.glob("rubrics_*__*.jsonl.progress.json"))
 
 if not progress_files:

@@ -9,6 +9,7 @@
 - 각 rubric은 prompt-specific이어야 하고, binary YES/NO로 판정 가능해야 합니다.
 - vague하거나 generic한 writing advice는 피하세요.
 - 응답 내용 자체를 그대로 복사하지 마세요.
+- 반드시 정확히 {initial_criteria_count}개의 criterion을 출력하세요. 부족하거나 초과하면 안 됩니다.
 
 반드시 JSON만 출력하세요.
 

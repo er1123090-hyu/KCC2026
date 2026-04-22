@@ -1,0 +1,91 @@
+experiment:
+  name: korean_rubric_grounding_prompt100_qwen_rrd_gpt5mini
+  seed: 20260420
+  smoke_test: false
+  output_dir: runs/korean_rubric_grounding_prompt100_qwen_rrd_gpt5mini
+  drop_tie_pairs: true
+  pairwise_tie_breaker: A
+
+api:
+  openai_api_key_env: OPENAI_API_KEY
+  openai_base_url: null
+  request_timeout_seconds: 600
+  max_retries: 4
+
+models:
+  evaluator_model: gpt-5-mini
+  rubric_generators:
+    qwen_small: Qwen/Qwen3-4B-FP8
+
+data:
+  meta_eval_datasets:
+    - dataset_name: HAERAE-HUB/KUDGE
+      use_pairwise_like_subsets_only: true
+      include_false_subset_if_available: true
+    - dataset_name: HAERAE-HUB/Korean-Human-Judgements
+
+splits:
+  calibration_ratio: 0.2
+  test_ratio: 0.8
+  split_unit: prompt_id
+  seed: 20260420
+
+retrieval:
+  embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+
+auxiliary_response_generation:
+  model: gpt-5
+  num_samples: 8
+  temperature: null
+  top_p: null
+  max_new_tokens: 4096
+  reasoning_effort: low
+  independent_sampling: true
+
+rubric_generation:
+  rar_pairwise_reference:
+    min_items: 7
+    max_items: 20
+    max_output_tokens: 1800
+    temperature: 0.2
+  rar_pairwise_sample:
+    min_items: 7
+    max_items: 20
+    max_output_tokens: 1800
+    temperature: 0.2
+  rrd_pairwise:
+    initial_criteria: 4
+    sample_response_count: 4
+    max_final_criteria: 12
+    max_depth: 1
+    decompose_if_satisfied_by_more_than: 3
+    redundancy_cosine_threshold: 0.86
+    max_output_tokens: 1400
+    temperature: 0.2
+  llm_weighting:
+    max_output_tokens: 512
+    temperature: 0.0
+
+pairwise_evaluation:
+  temperature: null
+  max_output_tokens: 4096
+  json_retry_limit: 2
+  reasoning_effort: low
+
+binary_rubric_evaluation:
+  temperature: null
+  max_output_tokens: 4096
+  json_retry_limit: 2
+  reasoning_effort: low
+  weighting_mode: llm
+  wu_covariance_ridge: 1.0e-4
+  wu_min_covariance_samples: 8
+  wu_negative_weight_handling: clip_and_renorm
+
+runtime:
+  evaluation_concurrency: 20
+
+run:
+  do_analysis: false
+  do_plots: false
+  do_reports: false

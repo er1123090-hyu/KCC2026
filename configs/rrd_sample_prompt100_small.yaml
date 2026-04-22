@@ -1,0 +1,76 @@
+experiment:
+  name: korean_rubric_grounding_rrd_sample_prompt100_small
+  seed: 20260420
+  smoke_test: false
+  output_dir: runs/korean_rubric_grounding_rrd_sample_prompt100_small
+  drop_tie_pairs: true
+  pairwise_tie_breaker: A
+
+api:
+  openai_api_key_env: OPENAI_API_KEY
+  openai_base_url: null
+  request_timeout_seconds: 600
+  max_retries: 4
+
+models:
+  evaluator_model: gpt-oss-120b
+  rubric_generators:
+    qwen_small: Qwen/Qwen3-4B-FP8
+    gemma_small: google/gemma-4-E4B-it
+
+data:
+  meta_eval_datasets:
+    - dataset_name: HAERAE-HUB/KUDGE
+      use_pairwise_like_subsets_only: true
+      include_false_subset_if_available: true
+    - dataset_name: HAERAE-HUB/Korean-Human-Judgements
+
+splits:
+  calibration_ratio: 0.2
+  test_ratio: 0.8
+  split_unit: prompt_id
+  seed: 20260420
+
+retrieval:
+  embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+
+auxiliary_response_generation:
+  model: gpt-5
+  num_samples: 4
+  temperature: null
+  top_p: null
+  max_new_tokens: 4096
+  reasoning_effort: low
+  independent_sampling: true
+
+rubric_generation:
+  rrd_pairwise:
+    initial_criteria: 4
+    sample_response_count: 4
+    max_final_criteria: 12
+    max_depth: 1
+    decompose_if_satisfied_by_more_than: 3
+    redundancy_cosine_threshold: 0.86
+    max_output_tokens: 1400
+    temperature: 0.2
+  llm_weighting:
+    max_output_tokens: 512
+    temperature: 0.0
+
+binary_rubric_evaluation:
+  temperature: 0.0
+  max_output_tokens: 4096
+  json_retry_limit: 2
+  reasoning_effort: low
+  weighting_mode: llm
+  wu_covariance_ridge: 1.0e-4
+  wu_min_covariance_samples: 8
+  wu_negative_weight_handling: clip_and_renorm
+
+runtime:
+  generation_concurrency: 4
+
+run:
+  do_analysis: false
+  do_plots: false
+  do_reports: false

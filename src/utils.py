@@ -40,7 +40,11 @@ def parse_common_args(*, require_split: bool = False) -> argparse.Namespace:
     if require_split:
         parser.add_argument("--split", required=True, choices=["calibration", "test"])
     parser.add_argument("--smoke_test", action="store_true")
-    parser.add_argument("--rrd_weighting_mode", choices=["llm", "uniform", "wu"])
+    parser.add_argument("--rrd_weighting_mode", choices=["llm", "uniform", "wu", "both"])
+    parser.add_argument("--prompt-id-file", "--prompt_id_file", dest="prompt_id_file")
+    parser.add_argument("--rubric-split")
+    parser.add_argument("--prediction-split")
+    parser.add_argument("--concurrency", type=int, default=None)
     return parser.parse_args()
 
 
@@ -408,6 +412,17 @@ def load_auxiliary_samples(path: str | Path) -> list[AuxiliarySample]:
 
 def load_rubrics(path: str | Path) -> list[Rubric]:
     return [Rubric.model_validate(row) for row in read_jsonl(path)]
+
+
+def load_prompt_id_allowlist(path: str | Path) -> set[str]:
+    prompt_ids = {
+        line.strip()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    if not prompt_ids:
+        raise RuntimeError(f"Prompt ID allowlist is empty: {path}")
+    return prompt_ids
 
 
 def detect_auxiliary_reuse(
