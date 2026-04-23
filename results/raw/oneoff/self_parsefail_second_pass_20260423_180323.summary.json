@@ -1,0 +1,6 @@
+{
+  "target_count": 7,
+  "remaining": {},
+  "backup_path": "results/raw/pair_predictions_full_self_8cond_gptoss120b_tp4.jsonl.before_self_parsefail_second_pass_20260423_180323",
+  "audit_path": "results/raw/oneoff/self_parsefail_second_pass_20260423_180323.jsonl"
+}

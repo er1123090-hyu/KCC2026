@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 from pathlib import Path
+import time
 from typing import Any, Sequence
 
 import numpy as np
@@ -66,6 +68,21 @@ def _load_output_rows(output_path: Path, *, key_field: str) -> dict[str, dict[st
             continue
         existing[str(key_value)] = item
     return existing
+
+
+def _partition_existing_rows(
+    existing_rows: dict[str, dict[str, Any]],
+    *,
+    target_keys: set[str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    targeted_rows: dict[str, dict[str, Any]] = {}
+    preserved_rows: dict[str, dict[str, Any]] = {}
+    for key, row in existing_rows.items():
+        if key in target_keys:
+            targeted_rows[key] = row
+        else:
+            preserved_rows[key] = row
+    return targeted_rows, preserved_rows
 
 
 def _progress_path(output_path: Path) -> Path:
@@ -315,6 +332,17 @@ def _parse_rar_items(payload: dict[str, Any], *, min_items: int, max_items: int)
     if not (min_items <= len(items) <= max_items):
         raise ValueError(f"Expected {min_items}-{max_items} RaR items, found {len(items)}")
     return items
+
+
+def _rar_generation_config(config: dict[str, Any], *, method: str) -> dict[str, Any]:
+    rubric_generation = config["rubric_generation"]
+    if method == "rar_pairwise_reference":
+        return rubric_generation["rar_pairwise_reference"]
+    if method == "rar_pairwise_sample":
+        return rubric_generation["rar_pairwise_sample"]
+    if method == "rar_pairwise_self":
+        return rubric_generation.get("rar_pairwise_self", rubric_generation["rar_pairwise_sample"])
+    raise RuntimeError(f"Unsupported RaR method: {method}")
 
 
 def _mock_criteria(*, prompt_id: str, method: str, count: int, prefix: str) -> list[Criterion]:
@@ -585,6 +613,39 @@ def _run_rrd_reference_refinement_prompt(
     }
 
 
+def _run_rrd_self_refinement_prompt(
+    *,
+    criterion: Criterion,
+    prompt: str,
+    generator_model: str,
+    config: dict[str, Any],
+    smoke_test: bool,
+    template_text: str,
+) -> tuple[bool, bool, dict[str, Any]]:
+    if smoke_test:
+        keep = int(stable_hash(prompt, criterion.id, "self_keep", length=2), 16) % 5 != 0
+        should_decompose = keep and int(stable_hash(prompt, criterion.id, "self_decompose", length=2), 16) % 2 == 0
+        return keep, should_decompose, {"reason": "smoke_self_refinement"}
+    prompt_text = render_prompt_template(
+        template_text,
+        prompt=prompt,
+        criterion_json=criterion.model_dump_json(indent=2),
+    )
+    payload, raw_output = _call_model_json(
+        config=config,
+        model_id=generator_model,
+        prompt=prompt_text,
+        max_new_tokens=config["rubric_generation"]["rrd_pairwise"]["max_output_tokens"],
+        temperature=config["rubric_generation"]["rrd_pairwise"]["temperature"],
+        retries=2,
+        response_format_json=True,
+    )
+    return bool(payload.get("keep", False)), bool(payload.get("should_decompose", False)), {
+        "reason": payload.get("reason", ""),
+        "raw_output": raw_output,
+    }
+
+
 def _decompose_rrd_criterion(
     *,
     criterion: Criterion,
@@ -834,12 +895,140 @@ def _expand_rrd_reference_criterion(
     return [criterion]
 
 
+def _expand_rrd_self_criterion(
+    *,
+    criterion: Criterion,
+    prompt: str,
+    generator_model: str,
+    config: dict[str, Any],
+    depth: int,
+    smoke_test: bool,
+    filter_template: str,
+    decompose_template: str,
+    diagnostics: list[dict[str, Any]],
+) -> list[Criterion]:
+    keep, should_decompose, refine_meta = _run_rrd_self_refinement_prompt(
+        criterion=criterion,
+        prompt=prompt,
+        generator_model=generator_model,
+        config=config,
+        smoke_test=smoke_test,
+        template_text=filter_template,
+    )
+    diagnostics.append(
+        {
+            "criterion_id": criterion.id,
+            "depth": depth,
+            "event": "self_refinement",
+            "keep": keep,
+            "should_decompose": should_decompose,
+            **refine_meta,
+        }
+    )
+    if not keep:
+        return []
+
+    if should_decompose and depth < config["rubric_generation"]["rrd_pairwise"]["max_depth"]:
+        try:
+            children = _decompose_rrd_criterion(
+                criterion=criterion,
+                prompt=prompt,
+                samples=[],
+                reference_response=None,
+                generator_model=generator_model,
+                config=config,
+                smoke_test=smoke_test,
+                template_text=decompose_template,
+            )
+            expanded: list[Criterion] = []
+            for child_index, child in enumerate(children, start=1):
+                child.id = f"{criterion.id}_{child_index}"
+                expanded.extend(
+                    _expand_rrd_self_criterion(
+                        criterion=child,
+                        prompt=prompt,
+                        generator_model=generator_model,
+                        config=config,
+                        depth=depth + 1,
+                        smoke_test=smoke_test,
+                        filter_template=filter_template,
+                        decompose_template=decompose_template,
+                        diagnostics=diagnostics,
+                    )
+                )
+            if expanded:
+                diagnostics.append(
+                    {
+                        "criterion_id": criterion.id,
+                        "depth": depth,
+                        "event": "self_decomposed",
+                        "child_count": len(expanded),
+                    }
+                )
+                return expanded
+        except Exception as exc:
+            diagnostics.append(
+                {
+                    "criterion_id": criterion.id,
+                    "depth": depth,
+                    "event": "self_decompose_failed",
+                    "error": str(exc),
+                }
+            )
+    elif should_decompose:
+        diagnostics.append(
+            {
+                "criterion_id": criterion.id,
+                "depth": depth,
+                "event": "self_decompose_skipped_max_depth",
+            }
+        )
+    return [criterion]
+
+
 def _fallback_rrd_criteria(*, prompt_id: str, method: str, max_count: int) -> list[Criterion]:
     criteria = _mock_criteria(prompt_id=prompt_id, method=method, count=min(max_count, 4), prefix="F")
     total = sum(item.weight for item in criteria) or 1.0
     for item in criteria:
         item.weight = float(item.weight / total)
     return criteria
+
+
+def _categorize_generation_error(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "json" in message and any(token in message for token in {"parse", "payload", "object"}):
+        return "json_parse"
+    if "criteria" in message and any(token in message for token in {"exactly", "expected", "found", "count"}):
+        return "criteria_count"
+    if "weight" in message:
+        return "weighting"
+    if "zero criteria" in message:
+        return "zero_criteria"
+    if any(token in message for token in {"timeout", "timed out", "connection", "503", "502", "429"}):
+        return "transport"
+    return "other"
+
+
+def _retry_config_for_rrd(
+    *,
+    config: dict[str, Any],
+    attempt_index: int,
+    error_category: str,
+) -> dict[str, Any]:
+    if attempt_index == 0:
+        return config
+    retried = copy.deepcopy(config)
+    rrd_cfg = retried["rubric_generation"]["rrd_pairwise"]
+    weighting_cfg = retried["rubric_generation"]["llm_weighting"]
+    rrd_cfg["temperature"] = 0.0
+    weighting_cfg["temperature"] = 0.0
+    rrd_cfg["max_output_tokens"] = int(max(rrd_cfg["max_output_tokens"], 1800))
+    if error_category in {"json_parse", "criteria_count"}:
+        rrd_cfg["initial_criteria"] = int(max(rrd_cfg["initial_criteria"], 5))
+    if error_category == "zero_criteria":
+        rrd_cfg["max_depth"] = 0
+        rrd_cfg["redundancy_cosine_threshold"] = 0.97
+    return retried
 
 
 def _method_requires_auxiliary_samples(method: str) -> bool:
@@ -862,14 +1051,17 @@ def _generate_rrd_rubric(
     filter_template: str,
     weight_template: str,
     method: str,
+    allow_fallbacks: bool = True,
 ) -> Rubric:
     reference_grounded_recursive_refinement = method == "rrd_pairwise_reference"
+    prompt_only_recursive_refinement = method == "rrd_pairwise_self"
     metadata: dict[str, Any] = {
         "fallback_used": None,
         "errors": [],
         "auxiliary_sample_ids": [sample.sample_id for sample in samples],
         "reference_guidance_used": bool(reference_response),
         "reference_grounded_recursive_refinement": reference_grounded_recursive_refinement,
+        "prompt_only_recursive_refinement": prompt_only_recursive_refinement,
     }
     initial_criteria: list[Criterion] = []
     expanded_criteria: list[Criterion] = []
@@ -930,6 +1122,11 @@ def _generate_rrd_rubric(
             else:
                 if last_payload is None:
                     raise RuntimeError("RRD initial criteria generation did not return a payload.")
+                if not allow_fallbacks:
+                    raise RuntimeError(
+                        "RRD initial criteria generation did not reach the required criterion count "
+                        f"after retries: {last_initial_error or 'unknown error'}"
+                    )
                 initial_criteria = _criteria_from_payload(
                     last_payload,
                     key="criteria",
@@ -953,6 +1150,22 @@ def _generate_rrd_rubric(
                         criterion=criterion,
                         prompt=prompt,
                         reference_response=reference_response,
+                        generator_model=generator_model,
+                        config=config,
+                        depth=0,
+                        smoke_test=smoke_test,
+                        filter_template=filter_template,
+                        decompose_template=decompose_template,
+                        diagnostics=diagnostics,
+                    )
+                )
+        elif prompt_only_recursive_refinement:
+            expanded_criteria = []
+            for criterion in initial_criteria:
+                expanded_criteria.extend(
+                    _expand_rrd_self_criterion(
+                        criterion=criterion,
+                        prompt=prompt,
                         generator_model=generator_model,
                         config=config,
                         depth=0,
@@ -995,6 +1208,8 @@ def _generate_rrd_rubric(
                 model_id=generator_model,
             )
         except Exception as exc:
+            if not allow_fallbacks:
+                raise RuntimeError(f"LLM weighting failed without fallback: {exc}") from exc
             metadata["errors"].append(f"LLM weighting failed: {exc}")
             weighted_criteria = _normalize_criterion_weights(expanded_criteria)
             weight_meta = {
@@ -1014,6 +1229,11 @@ def _generate_rrd_rubric(
             generation_metadata=metadata,
         )
     except Exception as exc:
+        if not allow_fallbacks:
+            raise RuntimeError(
+                f"RRD rubric generation failed without fallback for prompt_id={prompt_id} "
+                f"pair_id={pair_id or '(prompt-scoped)'}: {exc}"
+            ) from exc
         metadata["errors"].append(str(exc))
         recovered_criteria = expanded_criteria or initial_criteria
         if recovered_criteria:
@@ -1052,6 +1272,97 @@ def _generate_rrd_rubric(
         )
 
 
+def _generate_rrd_rubric_with_retry(
+    *,
+    prompt_id: str,
+    pair_id: str | None,
+    prompt: str,
+    samples: list[AuxiliarySample],
+    reference_response: str | None,
+    generator_family: str,
+    generator_model: str,
+    config: dict[str, Any],
+    smoke_test: bool,
+    initial_template: str,
+    decompose_template: str,
+    filter_template: str,
+    weight_template: str,
+    method: str,
+    no_fallback: bool,
+    max_attempts: int,
+) -> Rubric:
+    if not no_fallback:
+        return _generate_rrd_rubric(
+            prompt_id=prompt_id,
+            pair_id=pair_id,
+            prompt=prompt,
+            samples=samples,
+            reference_response=reference_response,
+            generator_family=generator_family,
+            generator_model=generator_model,
+            config=config,
+            smoke_test=smoke_test,
+            initial_template=initial_template,
+            decompose_template=decompose_template,
+            filter_template=filter_template,
+            weight_template=weight_template,
+            method=method,
+            allow_fallbacks=True,
+        )
+
+    attempt_errors: list[dict[str, Any]] = []
+    last_exception: Exception | None = None
+    for attempt_index in range(max_attempts):
+        error_category = attempt_errors[-1]["category"] if attempt_errors else "initial"
+        attempt_config = _retry_config_for_rrd(
+            config=config,
+            attempt_index=attempt_index,
+            error_category=error_category,
+        )
+        try:
+            rubric = _generate_rrd_rubric(
+                prompt_id=prompt_id,
+                pair_id=pair_id,
+                prompt=prompt,
+                samples=samples,
+                reference_response=reference_response,
+                generator_family=generator_family,
+                generator_model=generator_model,
+                config=attempt_config,
+                smoke_test=smoke_test,
+                initial_template=initial_template,
+                decompose_template=decompose_template,
+                filter_template=filter_template,
+                weight_template=weight_template,
+                method=method,
+                allow_fallbacks=False,
+            )
+            rubric.generation_metadata["retry_without_fallback"] = {
+                "enabled": True,
+                "attempt_count": attempt_index + 1,
+                "errors": attempt_errors,
+            }
+            return rubric
+        except Exception as exc:
+            last_exception = exc
+            category = _categorize_generation_error(exc)
+            attempt_errors.append(
+                {
+                    "attempt": attempt_index + 1,
+                    "category": category,
+                    "error": str(exc),
+                }
+            )
+            if attempt_index + 1 >= max_attempts:
+                break
+            time.sleep(min(5, attempt_index + 1))
+    raise RuntimeError(
+        f"RRD rubric generation exhausted {max_attempts} attempts without fallback "
+        f"for prompt_id={prompt_id} pair_id={pair_id or '(prompt-scoped)'}; "
+        f"last_error={last_exception}"
+    )
+
+
 def _generate_rar_reference_rubric(
     *,
     pair: MetaEvalPair,
@@ -1061,6 +1372,7 @@ def _generate_rar_reference_rubric(
     smoke_test: bool,
     template_text: str,
 ) -> Rubric:
+    rar_cfg = _rar_generation_config(config, method="rar_pairwise_reference")
     metadata: dict[str, Any] = {"fallback_used": None, "errors": [], "reference_guidance_used": True}
     try:
         if smoke_test:
@@ -1075,14 +1387,14 @@ def _generate_rar_reference_rubric(
                     prompt=pair.prompt,
                     reference_response=_reference_response(pair),
                 ),
-                max_new_tokens=config["rubric_generation"]["rar_pairwise_reference"]["max_output_tokens"],
-                temperature=config["rubric_generation"]["rar_pairwise_reference"]["temperature"],
+                max_new_tokens=rar_cfg["max_output_tokens"],
+                temperature=rar_cfg["temperature"],
                 retries=2,
             )
             items = _parse_rar_items(
                 payload,
-                min_items=config["rubric_generation"]["rar_pairwise_reference"]["min_items"],
-                max_items=config["rubric_generation"]["rar_pairwise_reference"]["max_items"],
+                min_items=rar_cfg["min_items"],
+                max_items=rar_cfg["max_items"],
             )
             metadata["raw_output"] = raw_output
         return Rubric(
@@ -1119,6 +1431,7 @@ def _generate_rar_sample_rubric(
     smoke_test: bool,
     template_text: str,
 ) -> Rubric:
+    rar_cfg = _rar_generation_config(config, method="rar_pairwise_sample")
     metadata: dict[str, Any] = {
         "fallback_used": None,
         "errors": [],
@@ -1138,14 +1451,14 @@ def _generate_rar_sample_rubric(
                     prompt=prompt,
                     sample_responses_json=_sample_responses_json(samples),
                 ),
-                max_new_tokens=config["rubric_generation"]["rar_pairwise_sample"]["max_output_tokens"],
-                temperature=config["rubric_generation"]["rar_pairwise_sample"]["temperature"],
+                max_new_tokens=rar_cfg["max_output_tokens"],
+                temperature=rar_cfg["temperature"],
                 retries=2,
             )
             items = _parse_rar_items(
                 payload,
-                min_items=config["rubric_generation"]["rar_pairwise_sample"]["min_items"],
-                max_items=config["rubric_generation"]["rar_pairwise_sample"]["max_items"],
+                min_items=rar_cfg["min_items"],
+                max_items=rar_cfg["max_items"],
             )
             metadata["raw_output"] = raw_output
         return Rubric(
@@ -1171,6 +1484,69 @@ def _generate_rar_sample_rubric(
         )
 
 
+def _generate_rar_self_rubric(
+    *,
+    prompt_id: str,
+    prompt: str,
+    generator_family: str,
+    generator_model: str,
+    config: dict[str, Any],
+    smoke_test: bool,
+    template_text: str,
+) -> Rubric:
+    rar_cfg = _rar_generation_config(config, method="rar_pairwise_self")
+    metadata: dict[str, Any] = {
+        "fallback_used": None,
+        "errors": [],
+        "auxiliary_sample_ids": [],
+        "reference_guidance_used": False,
+        "prompt_only_generation": True,
+    }
+    try:
+        if smoke_test:
+            items = _mock_rar_items(prompt_id=prompt_id, method="rar_pairwise_self")
+            metadata["smoke_mock"] = True
+        else:
+            payload, raw_output = _call_model_json(
+                config=config,
+                model_id=generator_model,
+                prompt=render_prompt_template(
+                    template_text,
+                    prompt=prompt,
+                ),
+                max_new_tokens=rar_cfg["max_output_tokens"],
+                temperature=rar_cfg["temperature"],
+                retries=2,
+            )
+            items = _parse_rar_items(
+                payload,
+                min_items=rar_cfg["min_items"],
+                max_items=rar_cfg["max_items"],
+            )
+            metadata["raw_output"] = raw_output
+        return Rubric(
+            prompt_id=prompt_id,
+            pair_id=None,
+            method="rar_pairwise_self",
+            generator_family=generator_family,
+            generator_model=generator_model,
+            rar_items=items,
+            generation_metadata=metadata,
+        )
+    except Exception as exc:
+        metadata["errors"].append(str(exc))
+        metadata["fallback_used"] = "rar_static_fallback"
+        return Rubric(
+            prompt_id=prompt_id,
+            pair_id=None,
+            method="rar_pairwise_self",
+            generator_family=generator_family,
+            generator_model=generator_model,
+            rar_items=_mock_rar_items(prompt_id=prompt_id, method="rar_pairwise_self"),
+            generation_metadata=metadata,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -1184,18 +1560,24 @@ def main() -> None:
         choices=[
             "rar_pairwise_reference",
             "rar_pairwise_sample",
+            "rar_pairwise_self",
             "rrd_pairwise_reference",
             "rrd_pairwise_sample",
+            "rrd_pairwise_self",
         ],
     )
     parser.add_argument("--generator_family")
     parser.add_argument("--prompt-id-file", "--prompt_id_file", dest="prompt_id_file")
+    parser.add_argument("--no-fallback", action="store_true")
+    parser.add_argument("--max-row-attempts", type=int, default=6)
     args = parser.parse_args()
 
     if args.prompt_limit is not None and args.prompt_limit < 1:
         raise RuntimeError("--prompt-limit must be >= 1")
     if args.prompt_offset < 0:
         raise RuntimeError("--prompt-offset must be >= 0")
+    if args.max_row_attempts < 1:
+        raise RuntimeError("--max-row-attempts must be >= 1")
 
     config = load_config(args.config, smoke_test=args.smoke_test)
     all_pairs = load_meta_eval_pairs(get_meta_eval_pairs_path())
@@ -1235,12 +1617,16 @@ def main() -> None:
     templates = {
         "rar_reference": load_prompt_template("configs/prompts/rar_generate_reference_ko.txt"),
         "rar_sample": load_prompt_template("configs/prompts/rar_generate_sample_ko.txt"),
+        "rar_self": load_prompt_template("configs/prompts/rar_generate_self_ko.txt"),
         "rrd_initial_reference": load_prompt_template("configs/prompts/rrd_generate_initial_reference_ko.txt"),
         "rrd_initial_sample": load_prompt_template("configs/prompts/rrd_generate_initial_sample_ko.txt"),
+        "rrd_initial_self": load_prompt_template("configs/prompts/rrd_generate_initial_self_ko.txt"),
         "rrd_decompose_reference": load_prompt_template("configs/prompts/rrd_decompose_reference_ko.txt"),
         "rrd_decompose_sample": load_prompt_template("configs/prompts/rrd_decompose_sample_ko.txt"),
+        "rrd_decompose_self": load_prompt_template("configs/prompts/rrd_decompose_self_ko.txt"),
         "rrd_filter_reference": load_prompt_template("configs/prompts/rrd_filter_reference_ko.txt"),
         "rrd_filter_sample": load_prompt_template("configs/prompts/rrd_filter_sample_ko.txt"),
+        "rrd_refine_self": load_prompt_template("configs/prompts/rrd_refine_self_ko.txt"),
         "rrd_llm_weighting": load_prompt_template("configs/prompts/rrd_llm_weighting_ko.txt"),
     }
 
@@ -1290,21 +1676,34 @@ def main() -> None:
         for method in method_list:
             output_path = get_rubric_output_path(method, generator_family, split=output_split)
             key_field = "pair_id" if method in {"rar_pairwise_reference", "rrd_pairwise_reference"} else "prompt_id"
-            existing_rows = _load_output_rows(output_path, key_field=key_field)
+            target_keys = (
+                {pair.pair_id for pair in all_pairs}
+                if method in {"rar_pairwise_reference", "rrd_pairwise_reference"}
+                else set(prompt_rows)
+            )
+            existing_rows, preserved_rows = _partition_existing_rows(
+                _load_output_rows(output_path, key_field=key_field),
+                target_keys=target_keys,
+            )
+            preserved_count = len(preserved_rows)
 
             if method in {"rar_pairwise_reference", "rrd_pairwise_reference"}:
                 expected_rows = len(all_pairs)
-                completed = len(existing_rows)
+                completed = len(existing_rows) + preserved_count
+                total_rows = expected_rows + preserved_count
                 _write_progress(
                     output_path=output_path,
                     generator_family=generator_family,
                     method=method,
                     done=completed,
-                    total=expected_rows,
+                    total=total_rows,
                     key_field=key_field,
                 )
                 if completed:
-                    print(f"[{generator_family}/{method}] resuming with {completed}/{expected_rows} completed")
+                    print(
+                        f"[{generator_family}/{method}] resuming with {completed}/{total_rows} completed "
+                        f"(targeted={len(existing_rows)}/{expected_rows}, preserved={preserved_count})"
+                    )
                 pending_pairs = [pair for pair in sorted(all_pairs, key=lambda item: (item.prompt_id, item.pair_id)) if pair.pair_id not in existing_rows]
 
                 def build_pair_row(pair: MetaEvalPair) -> tuple[str, dict[str, Any]]:
@@ -1318,7 +1717,7 @@ def main() -> None:
                             template_text=templates["rar_reference"],
                         )
                     else:
-                        rubric = _generate_rrd_rubric(
+                        rubric = _generate_rrd_rubric_with_retry(
                             prompt_id=pair.prompt_id,
                             pair_id=pair.pair_id,
                             prompt=pair.prompt,
@@ -1333,6 +1732,8 @@ def main() -> None:
                             filter_template=templates["rrd_filter_reference"],
                             weight_template=templates["rrd_llm_weighting"],
                             method="rrd_pairwise_reference",
+                            no_fallback=args.no_fallback,
+                            max_attempts=args.max_row_attempts,
                         )
                     return pair.pair_id, rubric.model_dump(mode="json")
 
@@ -1349,15 +1750,15 @@ def main() -> None:
                             append_jsonl(output_path, [row_payload])
                             existing_rows[str(row_key)] = row_payload
                             completed += 1
-                            if completed % 25 == 0 or completed == expected_rows:
-                                print(f"[{generator_family}/{method}] {completed}/{expected_rows}")
-                            if completed % 10 == 0 or completed == expected_rows:
+                            if completed % 25 == 0 or completed == total_rows:
+                                print(f"[{generator_family}/{method}] {completed}/{total_rows}")
+                            if completed % 10 == 0 or completed == total_rows:
                                 _write_progress(
                                     output_path=output_path,
                                     generator_family=generator_family,
                                     method=method,
                                     done=completed,
-                                    total=expected_rows,
+                                    total=total_rows,
                                     key_field=key_field,
                                 )
                     else:
@@ -1366,15 +1767,15 @@ def main() -> None:
                             append_jsonl(output_path, [row_payload])
                             existing_rows[str(row_key)] = row_payload
                             completed += 1
-                            if completed % 25 == 0 or completed == expected_rows:
-                                print(f"[{generator_family}/{method}] {completed}/{expected_rows}")
-                            if completed % 10 == 0 or completed == expected_rows:
+                            if completed % 25 == 0 or completed == total_rows:
+                                print(f"[{generator_family}/{method}] {completed}/{total_rows}")
+                            if completed % 10 == 0 or completed == total_rows:
                                 _write_progress(
                                     output_path=output_path,
                                     generator_family=generator_family,
                                     method=method,
                                     done=completed,
-                                    total=expected_rows,
+                                    total=total_rows,
                                     key_field=key_field,
                                 )
                 finally:
@@ -1383,26 +1784,31 @@ def main() -> None:
             else:
                 prompt_items = sorted(prompt_rows.items())
                 expected_rows = len(prompt_items)
-                completed = len(existing_rows)
+                completed = len(existing_rows) + preserved_count
+                total_rows = expected_rows + preserved_count
                 _write_progress(
                     output_path=output_path,
                     generator_family=generator_family,
                     method=method,
                     done=completed,
-                    total=expected_rows,
+                    total=total_rows,
                     key_field=key_field,
                 )
                 if completed:
-                    print(f"[{generator_family}/{method}] resuming with {completed}/{expected_rows} completed")
+                    print(
+                        f"[{generator_family}/{method}] resuming with {completed}/{total_rows} completed "
+                        f"(targeted={len(existing_rows)}/{expected_rows}, preserved={preserved_count})"
+                    )
                 pending_prompts = [(prompt_id, payload) for prompt_id, payload in prompt_items if prompt_id not in existing_rows]
 
                 def build_prompt_row(prompt_id: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-                    samples = sorted(samples_by_prompt.get(prompt_id, []), key=lambda item: item.sample_id)
-                    expected = config["auxiliary_response_generation"]["num_samples"]
-                    if len(samples) < expected:
-                        raise RuntimeError(f"Prompt {prompt_id} missing auxiliary samples for {method}")
-                    samples = samples[:expected]
-                    rrd_samples = _select_rrd_samples(samples, config=config) if method == "rrd_pairwise_sample" else samples
+                    samples: list[AuxiliarySample] = []
+                    if _method_requires_auxiliary_samples(method):
+                        samples = sorted(samples_by_prompt.get(prompt_id, []), key=lambda item: item.sample_id)
+                        expected = config["auxiliary_response_generation"]["num_samples"]
+                        if len(samples) < expected:
+                            raise RuntimeError(f"Prompt {prompt_id} missing auxiliary samples for {method}")
+                        samples = samples[:expected]
                     if method == "rar_pairwise_sample":
                         rubric = _generate_rar_sample_rubric(
                             prompt_id=prompt_id,
@@ -1414,8 +1820,19 @@ def main() -> None:
                             smoke_test=config["experiment"]["smoke_test"],
                             template_text=templates["rar_sample"],
                         )
-                    else:
-                        rubric = _generate_rrd_rubric(
+                    elif method == "rar_pairwise_self":
+                        rubric = _generate_rar_self_rubric(
+                            prompt_id=prompt_id,
+                            prompt=payload["prompt"],
+                            generator_family=generator_family,
+                            generator_model=generator_model,
+                            config=config,
+                            smoke_test=config["experiment"]["smoke_test"],
+                            template_text=templates["rar_self"],
+                        )
+                    elif method == "rrd_pairwise_sample":
+                        rrd_samples = _select_rrd_samples(samples, config=config)
+                        rubric = _generate_rrd_rubric_with_retry(
                             prompt_id=prompt_id,
                             pair_id=None,
                             prompt=payload["prompt"],
@@ -1430,7 +1847,30 @@ def main() -> None:
                             filter_template=templates["rrd_filter_sample"],
                             weight_template=templates["rrd_llm_weighting"],
                             method="rrd_pairwise_sample",
+                            no_fallback=args.no_fallback,
+                            max_attempts=args.max_row_attempts,
                         )
+                    elif method == "rrd_pairwise_self":
+                        rubric = _generate_rrd_rubric_with_retry(
+                            prompt_id=prompt_id,
+                            pair_id=None,
+                            prompt=payload["prompt"],
+                            samples=[],
+                            reference_response=None,
+                            generator_family=generator_family,
+                            generator_model=generator_model,
+                            config=config,
+                            smoke_test=config["experiment"]["smoke_test"],
+                            initial_template=templates["rrd_initial_self"],
+                            decompose_template=templates["rrd_decompose_self"],
+                            filter_template=templates["rrd_refine_self"],
+                            weight_template=templates["rrd_llm_weighting"],
+                            method="rrd_pairwise_self",
+                            no_fallback=args.no_fallback,
+                            max_attempts=args.max_row_attempts,
+                        )
+                    else:
+                        raise RuntimeError(f"Unsupported prompt-scoped method: {method}")
                     return prompt_id, rubric.model_dump(mode="json")
 
                 if configured_concurrency == 1:
@@ -1449,15 +1889,15 @@ def main() -> None:
                             append_jsonl(output_path, [row_payload])
                             existing_rows[str(row_key)] = row_payload
                             completed += 1
-                            if completed % 25 == 0 or completed == expected_rows:
-                                print(f"[{generator_family}/{method}] {completed}/{expected_rows}")
-                            if completed % 10 == 0 or completed == expected_rows:
+                            if completed % 25 == 0 or completed == total_rows:
+                                print(f"[{generator_family}/{method}] {completed}/{total_rows}")
+                            if completed % 10 == 0 or completed == total_rows:
                                 _write_progress(
                                     output_path=output_path,
                                     generator_family=generator_family,
                                     method=method,
                                     done=completed,
-                                    total=expected_rows,
+                                    total=total_rows,
                                     key_field=key_field,
                                 )
                     else:
@@ -1466,28 +1906,30 @@ def main() -> None:
                             append_jsonl(output_path, [row_payload])
                             existing_rows[str(row_key)] = row_payload
                             completed += 1
-                            if completed % 25 == 0 or completed == expected_rows:
-                                print(f"[{generator_family}/{method}] {completed}/{expected_rows}")
-                            if completed % 10 == 0 or completed == expected_rows:
+                            if completed % 25 == 0 or completed == total_rows:
+                                print(f"[{generator_family}/{method}] {completed}/{total_rows}")
+                            if completed % 10 == 0 or completed == total_rows:
                                 _write_progress(
                                     output_path=output_path,
                                     generator_family=generator_family,
                                     method=method,
                                     done=completed,
-                                    total=expected_rows,
+                                    total=total_rows,
                                     key_field=key_field,
                                 )
                 finally:
                     if configured_concurrency != 1:
                         executor.shutdown(wait=True, cancel_futures=False)
-            ordered_rows = [existing_rows[key] for key in sorted(existing_rows)]
+            merged_rows = dict(preserved_rows)
+            merged_rows.update(existing_rows)
+            ordered_rows = [merged_rows[key] for key in sorted(merged_rows)]
             write_jsonl(output_path, ordered_rows)
             _write_progress(
                 output_path=output_path,
                 generator_family=generator_family,
                 method=method,
-                done=len(existing_rows),
-                total=expected_rows,
+                done=len(merged_rows),
+                total=total_rows,
                 key_field=key_field,
             )
         unload_all_models()

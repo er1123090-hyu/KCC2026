@@ -1,0 +1,13 @@
+{
+  "source_file": "results/raw/pair_predictions_pairwise_judge_only.jsonl",
+  "output_file": "results/raw/pair_predictions_pairwise_judge_completed_final.jsonl",
+  "included_methods": [
+    "pairwise_baseline",
+    "rar_pairwise_reference__qwen_large"
+  ],
+  "rows_per_method": {
+    "pairwise_baseline": 1396,
+    "rar_pairwise_reference__qwen_large": 1396
+  },
+  "total_rows": 2792
+}

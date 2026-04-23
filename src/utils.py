@@ -324,6 +324,12 @@ def compose_condition_name(method: str, generator_family: str | None = None) -> 
 
 
 def get_condition_specs(config: dict[str, Any]) -> list[ConditionSpec]:
+    include_self_conditions = os.environ.get("KCC_INCLUDE_SELF_CONDITIONS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     specs = [
         ConditionSpec(
             condition_name="pairwise_baseline",
@@ -371,6 +377,27 @@ def get_condition_specs(config: dict[str, Any]) -> list[ConditionSpec]:
                 ),
             ]
         )
+        if include_self_conditions:
+            specs.extend(
+                [
+                    ConditionSpec(
+                        condition_name=compose_condition_name("rar_pairwise_self", generator_family),
+                        method="rar_pairwise_self",
+                        generator_family=generator_family,
+                        generator_model=generator_model,
+                        eval_protocol="pairwise_judge",
+                        rubric_scope="prompt",
+                    ),
+                    ConditionSpec(
+                        condition_name=compose_condition_name("rrd_pairwise_self", generator_family),
+                        method="rrd_pairwise_self",
+                        generator_family=generator_family,
+                        generator_model=generator_model,
+                        eval_protocol="binary_rubric_aggregation",
+                        rubric_scope="prompt",
+                    ),
+                ]
+            )
     method_allowlist = {
         item.strip()
         for item in os.environ.get("KCC_METHOD_ALLOWLIST", "").split(",")

@@ -1,0 +1,30 @@
+다음 기준은 너무 넓거나 여러 요구를 함께 담고 있을 수 있습니다.
+
+사용자 요청만 참고하면서, 현재 기준을 더 세밀하고 판정 가능한 2~4개의 하위 기준으로 분해하세요.
+
+조건:
+- 반드시 JSON만 출력하세요.
+- 하위 기준은 서로 최대한 중복되지 않아야 합니다.
+- 각 하위 기준은 가능한 한 하나의 독립적인 판정 포인트만 담아야 합니다.
+- 특정 예시 답변 표현을 상정해 베끼지 말고, YES/NO 판정 가능한 형태로 쓰세요.
+
+{
+  "subcriteria": [
+    {
+      "axis": "instruction_following",
+      "importance": "essential",
+      "weight": 0.5,
+      "polarity": "positive",
+      "text_ko": "응답은 ...",
+      "self_contained": true
+    }
+  ]
+}
+
+<user_prompt>
+{prompt}
+</user_prompt>
+
+<criterion_to_decompose>
+{criterion_json}
+</criterion_to_decompose>

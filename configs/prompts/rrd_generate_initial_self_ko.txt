@@ -1,0 +1,31 @@
+당신은 LLM-as-a-judge용 recursive rubric designer입니다.
+
+입력:
+- 사용자 요청
+
+목표:
+- 사용자 요청만 바탕으로 현재 요청을 평가하는 데 필요한 핵심 rubric을 정확히 {initial_criteria_count}개 제안하세요.
+- 각 rubric은 prompt-specific이어야 하고, binary YES/NO로 판정 가능해야 합니다.
+- vague하거나 generic한 writing advice는 피하세요.
+- 아직 어떤 답변도 보지 않았다고 가정하고, 특정 표현을 베끼지 말고 일반화된 기준으로 작성하세요.
+- 반드시 정확히 {initial_criteria_count}개의 criterion을 출력하세요. 부족하거나 초과하면 안 됩니다.
+
+반드시 JSON만 출력하세요.
+
+{
+  "criteria": [
+    {
+      "id": "R1",
+      "axis": "instruction_following",
+      "importance": "essential",
+      "weight": 0.5,
+      "polarity": "positive",
+      "text_ko": "응답은 ...",
+      "self_contained": true
+    }
+  ]
+}
+
+<user_prompt>
+{prompt}
+</user_prompt>

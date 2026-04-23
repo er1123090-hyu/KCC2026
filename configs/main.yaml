@@ -71,7 +71,7 @@ rubric_generation:
 
 pairwise_evaluation:
   temperature: 0.0
-  max_output_tokens: 4096
+  max_output_tokens: 10240
   json_retry_limit: 2
   reasoning_effort: low
 

@@ -63,6 +63,9 @@ def _parse_pairwise_judge_output(raw_text: str) -> tuple[str, str]:
         pass
 
     cleaned = " ".join(str(raw_text or "").replace("\\n", " ").split())
+    token = cleaned.strip().strip("\"'`.,:;()[]{}").upper()
+    if token in {"A", "B"}:
+        return token, "[letter-only]"
     for pattern in _WINNER_PATTERNS:
         match = re.search(pattern, cleaned)
         if match:
@@ -100,15 +103,46 @@ def _evaluate_pairwise_judge(
     last_error: Exception | None = None
     retries = int(config["pairwise_evaluation"]["json_retry_limit"])
     for _ in range(retries):
-        raw_output = create_chat_completion(
-            config=config,
-            model=evaluator_model,
-            prompt=prompt_text,
-            temperature=config["pairwise_evaluation"]["temperature"],
-            max_output_tokens=config["pairwise_evaluation"]["max_output_tokens"],
-            response_format_json=True,
-            reasoning_effort=config["pairwise_evaluation"].get("reasoning_effort"),
-        )
+        try:
+            raw_output = create_chat_completion(
+                config=config,
+                model=evaluator_model,
+                prompt=prompt_text,
+                temperature=config["pairwise_evaluation"]["temperature"],
+                max_output_tokens=config["pairwise_evaluation"]["max_output_tokens"],
+                reasoning_effort=config["pairwise_evaluation"].get("reasoning_effort"),
+                response_format_json=True,
+            )
+        except Exception as exc:
+            last_error = exc
+            raw_output = f"[api_error] {exc}"
+            continue
+        try:
+            winner, justification = _parse_pairwise_judge_output(raw_output)
+            return winner, justification, False, raw_output
+        except Exception as exc:
+            last_error = exc
+
+    strict_prompt = (
+        prompt_text
+        + "\n\n위 평가를 바탕으로 더 나은 응답을 고르세요. "
+        + "최종 출력은 반드시 A 또는 B 한 글자만 쓰세요."
+    )
+    for _ in range(retries):
+        try:
+            raw_output = create_chat_completion(
+                config=config,
+                model=evaluator_model,
+                prompt=strict_prompt,
+                temperature=config["pairwise_evaluation"]["temperature"],
+                max_output_tokens=max(256, min(512, int(config["pairwise_evaluation"].get("max_output_tokens", 256)))),
+                reasoning_effort=config["pairwise_evaluation"].get("reasoning_effort"),
+                response_format_json=False,
+            )
+        except Exception as exc:
+            last_error = exc
+            raw_output = f"[api_error] {exc}"
+            continue
         try:
             winner, justification = _parse_pairwise_judge_output(raw_output)
             return winner, justification, False, raw_output
@@ -132,21 +166,54 @@ def _evaluate_binary_criterion(
         return BinaryEvalResult(passed=passed, parse_failure=False, raw_output="YES" if passed else "NO")
 
     raw_output = ""
+    last_error: Exception | None = None
     retries = int(config["binary_rubric_evaluation"]["json_retry_limit"])
     for _ in range(retries):
-        raw_output = create_chat_completion(
-            config=config,
-            model=evaluator_model,
-            prompt=prompt_text,
-            temperature=config["binary_rubric_evaluation"]["temperature"],
-            max_output_tokens=config["binary_rubric_evaluation"]["max_output_tokens"],
-            response_format_json=False,
-            reasoning_effort=config["binary_rubric_evaluation"].get("reasoning_effort"),
-        )
+        try:
+            raw_output = create_chat_completion(
+                config=config,
+                model=evaluator_model,
+                prompt=prompt_text,
+                temperature=config["binary_rubric_evaluation"]["temperature"],
+                max_output_tokens=config["binary_rubric_evaluation"]["max_output_tokens"],
+                reasoning_effort=config["binary_rubric_evaluation"].get("reasoning_effort"),
+                response_format_json=False,
+            )
+        except Exception as exc:
+            last_error = exc
+            raw_output = f"[api_error] {exc}"
+            continue
         try:
             return BinaryEvalResult(passed=_parse_yes_no(raw_output), parse_failure=False, raw_output=raw_output)
         except Exception:
             continue
+    strict_prompt = (
+        "You are a binary evaluator. Answer exactly one token: YES or NO. "
+        "Do not explain.\n\n"
+        + prompt_text
+        + "\n\nFinal answer:"
+    )
+    for _ in range(retries):
+        try:
+            raw_output = create_chat_completion(
+                config=config,
+                model=evaluator_model,
+                prompt=strict_prompt,
+                temperature=config["binary_rubric_evaluation"]["temperature"],
+                max_output_tokens=max(192, min(384, int(config["binary_rubric_evaluation"].get("max_output_tokens", 192)))),
+                reasoning_effort=config["binary_rubric_evaluation"].get("reasoning_effort"),
+                response_format_json=False,
+            )
+        except Exception as exc:
+            last_error = exc
+            raw_output = f"[api_error] {exc}"
+            continue
+        try:
+            return BinaryEvalResult(passed=_parse_yes_no(raw_output), parse_failure=False, raw_output=raw_output)
+        except Exception as exc:
+            last_error = exc
+    if last_error is not None and not raw_output:
+        raw_output = f"[api_error] {last_error}"
     return BinaryEvalResult(passed=False, parse_failure=True, raw_output=raw_output)
 
 

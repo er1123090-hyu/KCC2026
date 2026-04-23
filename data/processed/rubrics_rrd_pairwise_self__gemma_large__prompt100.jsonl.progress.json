@@ -1,0 +1,10 @@
+{
+  "generator_family": "gemma_large",
+  "method": "rrd_pairwise_self",
+  "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rrd_pairwise_self__gemma_large__prompt100.jsonl",
+  "key_field": "prompt_id",
+  "completed_rows": 100,
+  "expected_rows": 100,
+  "remaining_rows": 0,
+  "complete": true
+}

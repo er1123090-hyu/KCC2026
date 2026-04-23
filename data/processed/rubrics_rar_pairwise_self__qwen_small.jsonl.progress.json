@@ -1,0 +1,10 @@
+{
+  "generator_family": "qwen_small",
+  "method": "rar_pairwise_self",
+  "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rar_pairwise_self__qwen_small.jsonl",
+  "key_field": "prompt_id",
+  "completed_rows": 573,
+  "expected_rows": 573,
+  "remaining_rows": 0,
+  "complete": true
+}

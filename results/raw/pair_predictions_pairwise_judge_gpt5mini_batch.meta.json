@@ -1,0 +1,12 @@
+{
+  "batch_id": "batch_69e87a35887481908e9e805af07ccdea",
+  "status": "validating",
+  "model": "gpt-5-mini",
+  "request_count": 12564,
+  "input_file_id": "file-KzouNJ9UbSz1KuL2twodmb",
+  "archive_path": "/data/minseo/KCC2026/batch_requests/pair_predictions_pairwise_judge_gpt5mini_batch.jsonl",
+  "output_path": "/data/minseo/KCC2026/results/raw/pair_predictions_pairwise_judge_gpt5mini_batch.jsonl",
+  "request_index_path": "/data/minseo/KCC2026/batch_requests/pair_predictions_pairwise_judge_gpt5mini_batch.index.json",
+  "completion_window": "24h",
+  "submitted_at": "2026-04-22 16:35:18"
+}

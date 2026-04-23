@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from .utils import ensure_parent, extract_first_json_object
@@ -40,6 +41,8 @@ def get_openai_client(config: dict[str, Any]):
     }
     if base_url:
         kwargs["base_url"] = base_url
+        if str(base_url).startswith("http://"):
+            kwargs["http_client"] = httpx.Client(verify=False)
     return OpenAI(**kwargs)
 
 
@@ -111,9 +114,9 @@ def create_chat_completion(
     prompt: str,
     temperature: float | None,
     max_output_tokens: int,
+    reasoning_effort: str | None = None,
     top_p: float | None = None,
     response_format_json: bool = False,
-    reasoning_effort: str | None = None,
     extra_body: dict[str, Any] | None = None,
 ) -> str:
     client = get_openai_client(config)
@@ -132,6 +135,8 @@ def create_chat_completion(
             body["response_format"] = {"type": "json_object"}
         if reasoning_effort is not None:
             body["reasoning_effort"] = reasoning_effort
+            merged_extra_body = dict(merged_extra_body or {})
+            merged_extra_body["reasoning"] = {"effort": reasoning_effort}
         if merged_extra_body:
             body["extra_body"] = merged_extra_body
 
@@ -198,8 +203,8 @@ def preflight_chat_completion(
     prompt: str,
     temperature: float | None,
     max_output_tokens: int,
-    top_p: float | None = None,
     reasoning_effort: str | None = None,
+    top_p: float | None = None,
 ) -> None:
     try:
         create_chat_completion(
@@ -208,9 +213,9 @@ def preflight_chat_completion(
             prompt=prompt,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             top_p=top_p,
             response_format_json=False,
-            reasoning_effort=reasoning_effort,
         )
     except Exception as exc:
         raise _augment_openai_error(exc, model=model, temperature=temperature, top_p=top_p) from exc
