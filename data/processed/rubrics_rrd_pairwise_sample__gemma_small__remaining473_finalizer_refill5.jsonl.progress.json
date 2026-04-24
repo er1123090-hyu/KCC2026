@@ -1,0 +1,10 @@
+{
+  "generator_family": "gemma_small",
+  "method": "rrd_pairwise_sample",
+  "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rrd_pairwise_sample__gemma_small__remaining473_finalizer_refill5.jsonl",
+  "key_field": "prompt_id",
+  "completed_rows": 1,
+  "expected_rows": 1,
+  "remaining_rows": 0,
+  "complete": true
+}

@@ -1,0 +1,10 @@
+{
+  "generator_family": "gemma_small",
+  "method": "rrd_pairwise_sample",
+  "output_path": "/data/minseo/KCC2026/korean-rubric-grounding-main/data/processed/rubrics_rrd_pairwise_sample__gemma_small.jsonl",
+  "key_field": "prompt_id",
+  "completed_rows": 573,
+  "expected_rows": 573,
+  "remaining_rows": 0,
+  "complete": true
+}

@@ -1,0 +1,10 @@
+{
+  "generator_family": "qwen_small",
+  "method": "rrd_pairwise_sample",
+  "output_path": "/data/minseo/KCC2026/data/processed/rubrics_rrd_pairwise_sample__qwen_small__remaining473.jsonl",
+  "key_field": "prompt_id",
+  "completed_rows": 473,
+  "expected_rows": 473,
+  "remaining_rows": 0,
+  "complete": true
+}
